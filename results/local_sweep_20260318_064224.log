@@ -1,0 +1,86 @@
+[06:42:24] ===== LOCAL sweep: tiny-moe-rand, 3 total runs =====
+[06:42:24] Model : Corianas/Tiny-moe-rand  
+[06:42:24] Batch sizes: 1 2 4  |  Datasets: tiny_moe_local
+[06:42:24] GPU   : RTX 3070 Ti (8 GB)  — pipeline validation only
+[06:42:24] [1/3] tiny-moe-rand  bs=1  dataset=tiny_moe_local
+[06:42:24] Cleaning up server on port 30000...
+[06:42:29] Starting SGLang: model=Corianas/Tiny-moe-rand  bs=1  tp=1  quant=''
+[06:42:29] Waiting for SGLang server on port 30000 (may download model on first run)...
+[06:42:45] Server ready.
+[06:42:48] Running profiler: config=/tmp/cap_local_tlxgYk.yaml  batch_size=1
+Traceback (most recent call last):
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/utils/_http.py", line 403, in hf_raise_for_status
+    response.raise_for_status()
+  File "/opt/conda/lib/python3.10/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: https://huggingface.co/tiny-moe-rand/resolve/main/config.json
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/opt/conda/lib/python3.10/site-packages/transformers/utils/hub.py", line 479, in cached_files
+    hf_hub_download(
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1014, in hf_hub_download
+    return _hf_hub_download_to_cache_dir(
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1121, in _hf_hub_download_to_cache_dir
+    _raise_on_head_call_error(head_call_error, force_download, local_files_only)
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1662, in _raise_on_head_call_error
+    raise head_call_error
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1550, in _get_metadata_or_catch_error
+    metadata = get_hf_file_metadata(
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/utils/_validators.py", line 114, in _inner_fn
+    return fn(*args, **kwargs)
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 1467, in get_hf_file_metadata
+    r = _request_wrapper(
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 283, in _request_wrapper
+    response = _request_wrapper(
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/file_download.py", line 307, in _request_wrapper
+    hf_raise_for_status(response)
+  File "/opt/conda/lib/python3.10/site-packages/huggingface_hub/utils/_http.py", line 453, in hf_raise_for_status
+    raise _format(RepositoryNotFoundError, message, response) from e
+huggingface_hub.errors.RepositoryNotFoundError: 401 Client Error. (Request ID: Root=1-69ba496a-0179dd3f3fbc310c6dd9765d;96e0186b-5b32-4295-ab7f-279bb7a5b54f)
+
+Repository Not Found for url: https://huggingface.co/tiny-moe-rand/resolve/main/config.json.
+Please make sure you specified the correct `repo_id` and `repo_type`.
+If you are trying to access a private or gated repo, make sure you are authenticated. For more details, see https://huggingface.co/docs/huggingface_hub/authentication
+Invalid username or password.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/opt/conda/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/opt/conda/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/opt/MoE-CAP/moe_cap/runner/sglang_profile.py", line 482, in <module>
+    main()
+  File "/opt/MoE-CAP/moe_cap/runner/sglang_profile.py", line 472, in main
+    analyzer = SGLangMoEActivationAnalyzer(
+  File "/opt/MoE-CAP/moe_cap/runner/sglang_profile.py", line 51, in __init__
+    self.model_info = HFModelInfoRetriever(config=config)
+  File "/opt/MoE-CAP/moe_cap/model_loader/hf_model_info_loader.py", line 70, in __init__
+    self.hf_config = AutoConfig.from_pretrained(
+  File "/opt/conda/lib/python3.10/site-packages/transformers/models/auto/configuration_auto.py", line 1332, in from_pretrained
+    config_dict, unused_kwargs = PretrainedConfig.get_config_dict(pretrained_model_name_or_path, **kwargs)
+  File "/opt/conda/lib/python3.10/site-packages/transformers/configuration_utils.py", line 662, in get_config_dict
+    config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)
+  File "/opt/conda/lib/python3.10/site-packages/transformers/configuration_utils.py", line 721, in _get_config_dict
+    resolved_config_file = cached_file(
+  File "/opt/conda/lib/python3.10/site-packages/transformers/utils/hub.py", line 322, in cached_file
+    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)
+  File "/opt/conda/lib/python3.10/site-packages/transformers/utils/hub.py", line 511, in cached_files
+    raise OSError(
+OSError: tiny-moe-rand is not a local folder and is not a valid model identifier listed on 'https://huggingface.co/models'
+If this is a private repository, make sure to pass a token having permission to this repo either by logging in with `hf auth login` or by passing `token=<your_token>`
+Fixed-length mode detected: enabling ignore_eos for accurate output length
+[06:42:51] Cleaning up server on port 30000...
+   867scripts/run_single_local.sh: line 48:   867 Killed                  MOE_CAP_PROFILING_ONLY=1 python -m moe_cap.systems.sglang --model-path "$MODEL" --port "$PORT" --expert-distribution-recorder-mode stat --tp-size "$TP" --max-running-requests "$BATCH_SIZE" --mem-fraction-static 0.80 $QUANT_ARGS > "${OUTPUT_DIR}/server_$(basename "$MODEL")_bs${BATCH_SIZE}.log" 2>&1
+[06:42:56] [1/3] FAILED (exit 1) — check /workspace/results/local_sweep_20260318_064224.log
+[06:42:59] [2/3] tiny-moe-rand  bs=2  dataset=tiny_moe_local
+[06:42:59] Cleaning up server on port 30000...
+[06:43:04] Starting SGLang: model=Corianas/Tiny-moe-rand  bs=2  tp=1  quant=''
+[06:43:04] Waiting for SGLang server on port 30000 (may download model on first run)...
+[06:43:19] Cleaning up server on port 30000...
+  1109scripts/run_single_local.sh: line 48:  1109 Killed                  MOE_CAP_PROFILING_ONLY=1 python -m moe_cap.systems.sglang --model-path "$MODEL" --port "$PORT" --expert-distribution-recorder-mode stat --tp-size "$TP" --max-running-requests "$BATCH_SIZE" --mem-fraction-static 0.80 $QUANT_ARGS > "${OUTPUT_DIR}/server_$(basename "$MODEL")_bs${BATCH_SIZE}.log" 2>&1

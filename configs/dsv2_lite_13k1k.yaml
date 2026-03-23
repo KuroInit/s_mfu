@@ -1,0 +1,7 @@
+dataset_names: ["longbench_v2"]
+metrics: []
+model_id: deepseek-ai/DeepSeek-V2-Lite-Chat
+fixed_length_mode: true
+target_input_tokens: 13000
+target_output_tokens: 1000
+num_samples: 256

@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -N singularity_build
+#PBS -l select=1:ncpus=16:mem=128gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+
+module load singularity
+
+cd "$PBS_O_WORKDIR"
+
+TAR="${TAR:-$PBS_O_WORKDIR/moe-cap-sweep.tar.gz}"
+SIF="${SIF:-$PBS_O_WORKDIR/moe-cap-sweep.sif}"
+
+module load singularity
+
+echo "Building: $TAR -> $SIF"
+echo "Started:  $(date)"
+
+singularity build "$SIF" "docker-archive://$TAR"
+
+echo "Done:     $(date)"
+echo "Size:     $(du -sh "$SIF")"

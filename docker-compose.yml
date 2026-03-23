@@ -1,0 +1,24 @@
+services:
+  bench:
+    build: .
+    image: moe-cap-sweep:latest
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/hf_cache
+      - SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR=/workspace/expert_records
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - ${HF_HOME:-/mnt/network_drive/ashwin/hf_cache}:/hf_cache
+      - ./scripts:/workspace/scripts
+      - ./configs:/workspace/configs
+      - ./results:/workspace/results
+      - ./plots:/workspace/plots
+      - ./expert_records:/workspace/expert_records
+    # Override with: docker compose run bench bash scripts/sweep.sh
+    command: bash
+    stdin_open: true
+    tty: true
+    shm_size: "16gb"
+    ulimits:
+      memlock: -1

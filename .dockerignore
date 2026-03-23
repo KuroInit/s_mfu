@@ -1,8 +1,0 @@
-results/
-plots/
-expert_records/
-__pycache__/
-*.pyc
-*.tar.gz
-*.sif
-.git/

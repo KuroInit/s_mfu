@@ -1,7 +1,0 @@
-dataset_names: ["gsm8k"]
-metrics: []
-model_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
-fixed_length_mode: true
-target_input_tokens: 4000
-target_output_tokens: 1000
-num_samples: 256

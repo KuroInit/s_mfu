@@ -80,3 +80,16 @@ pytest tests/
 ```
 
 The test suite covers checkpoint persistence, SGLang lifecycle (start/health/kill), pre-flight model validation, runner invocation, and sweep loop behavior — all via mocks, no GPU required.
+
+## Analysis
+
+After a sweep completes, generate S_MFU and S_MBU vs batch size plots:
+
+```bash
+python analyze.py $RESULTS_DIR
+```
+
+Saves `smfu.png` and `smbu.png` to `RESULTS_DIR/`. Each figure shows one subplot
+per model with prefill (dashed) and decoding (solid) lines across batch sizes.
+
+Requires `matplotlib` (`pip install matplotlib`) and the MoE-CAP library installed.

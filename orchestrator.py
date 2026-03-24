@@ -18,7 +18,8 @@ from huggingface_hub.utils import RepositoryNotFoundError
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 SWEEP_CONFIG_PATH = os.environ.get("SWEEP_CONFIG", "sweep_config.yaml")
-CHECKPOINT_PATH = os.environ.get("CHECKPOINT_PATH", "/results/checkpoint.yaml")
+RESULTS_DIR = os.environ.get("RESULTS_DIR", "/results")
+CHECKPOINT_PATH = os.environ.get("CHECKPOINT_PATH", os.path.join(RESULTS_DIR, "checkpoint.yaml"))
 SGLANG_PORT = 30000
 SGLANG_STARTUP_TIMEOUT = 600   # 10 minutes
 SGLANG_HEALTH_INTERVAL = 5     # seconds between health polls
@@ -259,7 +260,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                         continue
 
                     config_file = f"configs/{dataset}_{slug}.yaml"
-                    output_dir = f"/results/{slug}/bs{batch_size}/{dataset}/"
+                    output_dir = f"{RESULTS_DIR}/{slug}/bs{batch_size}/{dataset}/"
 
                     print(f"[sweep]   [{done+1}/{total}] {dataset} ...")
                     rc = run_benchmark(config_file, batch_size, output_dir, port)

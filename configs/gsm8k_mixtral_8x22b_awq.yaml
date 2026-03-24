@@ -1,0 +1,3 @@
+dataset_names: ["gsm8k"]
+metrics: ["em", "f1"]
+model_id: MaziyarPanahi/Mixtral-8x22B-Instruct-v0.1-AWQ

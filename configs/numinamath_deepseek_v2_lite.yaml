@@ -1,0 +1,3 @@
+dataset_names: ["numinamath"]
+metrics: ["em", "f1"]
+model_id: deepseek-ai/DeepSeek-V2-Lite-Chat

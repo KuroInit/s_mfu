@@ -1,0 +1,35 @@
+# Convenience wrapper around `docker run`. Equivalent command:
+#
+#   docker run --rm --gpus all --ipc=host \
+#     --ulimit memlock=-1 --ulimit stack=67108864 \
+#     -v ${HF_CACHE_DIR}:/hf_cache:ro \
+#     -v ${RESULTS_DIR}:/results \
+#     -e HF_TOKEN \
+#     moe-cap-sweep
+#
+# Usage:
+#   HF_TOKEN=hf_... HF_CACHE_DIR=/path/to/hf_cache RESULTS_DIR=/path/to/results \
+#     docker compose up
+
+services:
+  sweep:
+    build: .
+    image: moe-cap-sweep
+    ipc: host
+    # NOTE: --shm-size is redundant with ipc: host and is intentionally omitted.
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ${HF_CACHE_DIR}:/hf_cache:ro
+      - ${RESULTS_DIR}:/results
+    restart: on-failure
+    environment:
+      - HF_TOKEN

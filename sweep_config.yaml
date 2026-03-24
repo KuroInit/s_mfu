@@ -1,0 +1,28 @@
+batch_sizes: [1, 32, 64, 128]
+datasets: [gsm8k, numinamath]
+port: 30000
+
+models:
+  - id: Qwen/Qwen1.5-MoE-A2.7B-Chat
+    tp: 1
+    slug: qwen1_5_moe
+
+  - id: deepseek-ai/DeepSeek-V2-Lite-Chat
+    tp: 1
+    slug: deepseek_v2_lite
+
+  - id: mistralai/Mixtral-8x7B-Instruct-v0.1
+    tp: 2
+    slug: mixtral_8x7b
+
+  - id: Qwen/Qwen3-30B-A3B
+    tp: 1
+    slug: qwen3_30b
+
+  - id: MaziyarPanahi/Mixtral-8x22B-Instruct-v0.1-AWQ
+    tp: 1
+    slug: mixtral_8x22b_awq
+
+  - id: Qwen/Qwen3-Next-80B-A3B-Instruct
+    tp: 2
+    slug: qwen3_next_80b

@@ -1,0 +1,10 @@
+# Prefill-heavy benchmark: 8K input tokens, 1 output token
+# Stresses prefill throughput / KV-cache fill with minimal decoding work.
+dataset_names: ["gsm8k"]
+metrics: []
+model_id: Qwen/Qwen3-Next-80B-A3B-Instruct
+
+fixed_length_mode: true
+target_input_tokens: 32768
+target_output_tokens: 1
+num_samples: 100

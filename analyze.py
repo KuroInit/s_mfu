@@ -239,7 +239,11 @@ def plot_metric(data: dict, metric_label: str, prefill_key: str,
 
 
 def walk_results(results_dir: Path):
-    """Yield (slug, bs_dir_name, dataset, leaf_dir) for every leaf directory."""
+    """Yield (slug, bs_dir_name, dataset, leaf_dir) for every leaf directory.
+
+    The runner writes files two levels below the dataset dir:
+      <slug>/bs<N>/<dataset>/<org>/<model_name>/metadata_*.json
+    """
     for slug_dir in sorted(results_dir.iterdir()):
         if not slug_dir.is_dir():
             continue
@@ -250,7 +254,13 @@ def walk_results(results_dir: Path):
             for dataset_dir in sorted(bs_dir.iterdir()):
                 if not dataset_dir.is_dir():
                     continue
-                yield slug, bs_dir.name, dataset_dir.name, dataset_dir
+                for org_dir in sorted(dataset_dir.iterdir()):
+                    if not org_dir.is_dir():
+                        continue
+                    for model_dir in sorted(org_dir.iterdir()):
+                        if not model_dir.is_dir():
+                            continue
+                        yield slug, bs_dir.name, dataset_dir.name, model_dir
 
 
 def main() -> None:

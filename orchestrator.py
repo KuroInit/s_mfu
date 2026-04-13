@@ -270,9 +270,11 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                 continue
 
             # Compute chunked-prefill-size: largest input across datasets that
-            # will run at this batch_size + 50 buffer (follows MoE-CAP convention)
+            # will run at this batch_size + 50 buffer (follows MoE-CAP convention).
+            # Capped at 32768 to avoid OOM from intermediate activation memory
+            # on long-context datasets (e.g. maxctx at 122K tokens).
             max_input = _get_max_input_tokens(slug, datasets, batch_size)
-            prefill_size = max_input + 50 if max_input > 0 else None
+            prefill_size = min(max_input + 50, 32768) if max_input > 0 else None
 
             sep = "=" * 60
             print(f"\n{sep}")

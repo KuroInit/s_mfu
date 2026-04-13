@@ -106,6 +106,7 @@ def start_sglang(
         "--expert-distribution-recorder-mode", "stat",
         "--tp-size", str(tp),
         "--max-running-requests", str(batch_size),
+        "--disable-chunked-prefill",
     ]
     print(f"[sglang] Starting: {' '.join(cmd)}")
     return subprocess.Popen(cmd)

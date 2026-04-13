@@ -97,6 +97,7 @@ def start_sglang(
     tp: int,
     batch_size: int,
     port: int = SGLANG_PORT,
+    chunked_prefill_size: Optional[int] = None,
 ) -> subprocess.Popen:
     """Launch the MoE-CAP SGLang server as a background subprocess."""
     cmd = [
@@ -106,8 +107,9 @@ def start_sglang(
         "--expert-distribution-recorder-mode", "stat",
         "--tp-size", str(tp),
         "--max-running-requests", str(batch_size),
-        "--disable-chunked-prefill",
     ]
+    if chunked_prefill_size is not None and chunked_prefill_size > 0:
+        cmd += ["--chunked-prefill-size", str(chunked_prefill_size)]
     print(f"[sglang] Starting: {' '.join(cmd)}")
     return subprocess.Popen(cmd)
 
@@ -214,6 +216,25 @@ def _get_max_batch_size(config_file: str) -> Optional[int]:
         return None
 
 
+def _get_max_input_tokens(slug: str, datasets: list) -> int:
+    """Return the largest target_input_tokens across all dataset configs for a model slug.
+
+    Used to set --chunked-prefill-size so each request's full prefill fits in one chunk.
+    """
+    max_tokens = 0
+    for dataset in datasets:
+        config_file = f"configs/{dataset}_{slug}.yaml"
+        try:
+            with open(config_file, "r") as f:
+                cfg = yaml.safe_load(f) or {}
+            tokens = cfg.get("target_input_tokens", 0)
+            if tokens > max_tokens:
+                max_tokens = tokens
+        except FileNotFoundError:
+            pass
+    return max_tokens
+
+
 def load_sweep_config(path: str = SWEEP_CONFIG_PATH) -> dict:
     """Load and return the sweep configuration YAML."""
     with open(path, "r") as f:
@@ -237,6 +258,11 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
         slug = model["slug"]
         tp = model["tp"]
 
+        # Compute chunked-prefill-size: largest input across all datasets + 50 buffer
+        # so each request's full prefill fits in one chunk (follows MoE-CAP convention)
+        max_input = _get_max_input_tokens(slug, datasets)
+        prefill_size = max_input + 50 if max_input > 0 else None
+
         for batch_size in batch_sizes:
             # Skip entire (model, batch_size) if all datasets already succeeded
             if all(checkpoint.is_done(model_id, batch_size, ds) for ds in datasets):
@@ -249,7 +275,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
             print(f"[sweep] {slug}  bs={batch_size}  tp={tp}")
             print(sep)
 
-            proc = start_sglang(model_id, tp, batch_size, port)
+            proc = start_sglang(model_id, tp, batch_size, port, prefill_size)
             try:
                 if not wait_for_health(port):
                     print(f"[sweep] ERROR: SGLang failed to start within {SGLANG_STARTUP_TIMEOUT}s")

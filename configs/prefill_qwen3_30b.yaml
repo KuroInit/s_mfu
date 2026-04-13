@@ -10,3 +10,5 @@ fixed_length_mode: true
 target_input_tokens: 32768
 target_output_tokens: 1
 num_samples: 100
+# Qwen3-30B: KV=48KB/tok, 60GB weights → max bs=8 at 32K input.
+max_batch_size: 8

@@ -4,3 +4,6 @@ model_id: Qwen/Qwen3-30B-A3B
 precision: bfloat16
 dataset_split: test
 num_samples: 200
+
+fixed_length_mode: true
+target_output_tokens: 1

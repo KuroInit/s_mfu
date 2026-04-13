@@ -1,8 +1,12 @@
-# LongBench v2: real long-context documents (8K-128K+ words)
-# Multiple-choice QA over academic papers, legal texts, code repos, dialogues.
+# LongBench v2: real long-context documents, truncated to fit bs=128.
+# Qwen3-30B: 40K context, 60GB weights, KV=48KB/tok → 4K fits at bs=128.
 dataset_names: ["longbench_v2"]
 metrics: ["em"]
 model_id: Qwen/Qwen3-30B-A3B
 precision: bfloat16
 dataset_split: train
 num_samples: 200
+
+fixed_length_mode: true
+target_input_tokens: 4096
+target_output_tokens: 1

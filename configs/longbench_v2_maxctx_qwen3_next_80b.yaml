@@ -1,0 +1,14 @@
+# LongBench v2: max context window test.
+# Qwen3-Next-80B: 262K context, 80GB/GPU weights (TP=2), KV=6KB/tok/GPU + DeltaNet state.
+# At 262K tokens: bs=1 → ~90GB/GPU, bs=4 → ~99GB/GPU (OOM). Max safe bs=1.
+dataset_names: ["longbench_v2"]
+metrics: ["em"]
+model_id: Qwen/Qwen3-Next-80B-A3B-Instruct
+precision: bfloat16
+dataset_split: train
+num_samples: 200
+
+fixed_length_mode: true
+target_input_tokens: 262144
+target_output_tokens: 1
+max_batch_size: 1

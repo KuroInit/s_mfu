@@ -10,3 +10,5 @@ fixed_length_mode: true
 target_input_tokens: 32768
 target_output_tokens: 1
 num_samples: 100
+# Qwen3-Next-80B: KV=6KB/tok/GPU (TP=2), 80GB/GPU weights → max bs=32 at 32K input.
+max_batch_size: 32

@@ -203,6 +203,16 @@ def run_benchmark(
 
 # ─── Config Loading ───────────────────────────────────────────────────────────
 
+def _get_max_batch_size(config_file: str) -> Optional[int]:
+    """Read max_batch_size from a dataset config YAML, or None if not set."""
+    try:
+        with open(config_file, "r") as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg.get("max_batch_size")
+    except FileNotFoundError:
+        return None
+
+
 def load_sweep_config(path: str = SWEEP_CONFIG_PATH) -> dict:
     """Load and return the sweep configuration YAML."""
     with open(path, "r") as f:
@@ -261,6 +271,15 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
 
                     config_file = f"configs/{dataset}_{slug}.yaml"
                     output_dir = f"{RESULTS_DIR}/{slug}/bs{batch_size}/{dataset}/"
+
+                    # Check per-dataset max_batch_size limit
+                    max_bs = _get_max_batch_size(config_file)
+                    if max_bs is not None and batch_size > max_bs:
+                        print(f"[sweep]   Skipping {dataset} — bs={batch_size} exceeds max_batch_size={max_bs}")
+                        checkpoint.mark(model_id, batch_size, dataset, "skipped",
+                                        f"batch_size {batch_size} > max_batch_size {max_bs}")
+                        done += 1
+                        continue
 
                     print(f"[sweep]   [{done+1}/{total}] {dataset} ...")
                     rc = run_benchmark(config_file, batch_size, output_dir, port)

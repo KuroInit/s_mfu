@@ -10,3 +10,5 @@ fixed_length_mode: true
 target_input_tokens: 32768
 target_output_tokens: 1
 num_samples: 100
+# DeepSeek-V2-Lite: MLA KV=31KB/tok, 31.4GB weights → max bs=32 at 32K input.
+max_batch_size: 32

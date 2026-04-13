@@ -1,4 +1,4 @@
-# Prefill-heavy benchmark: 32K input tokens, 1 output token
+# Prefill-heavy benchmark: 75% of 40K context = 30K input tokens, 1 output token
 # Stresses prefill throughput / KV-cache fill with minimal decoding work.
 # Uses LongBench v2 real documents as base text for realistic attention patterns.
 dataset_names: ["longbench_v2"]
@@ -7,8 +7,8 @@ metrics: []
 model_id: Qwen/Qwen3-30B-A3B
 
 fixed_length_mode: true
-target_input_tokens: 32768
+target_input_tokens: 30720
 target_output_tokens: 1
 num_samples: 100
-# Qwen3-30B: KV=48KB/tok, 60GB weights → max bs=8 at 32K input.
-max_batch_size: 8
+# Qwen3-30B: KV=48KB/tok, 60GB weights → max bs=16 at 30K input.
+max_batch_size: 16

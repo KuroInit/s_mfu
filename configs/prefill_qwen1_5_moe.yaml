@@ -1,4 +1,4 @@
-# Prefill-heavy benchmark: 32K input tokens, 1 output token
+# Prefill-heavy benchmark: 75% of 32K context = 24K input tokens, 1 output token
 # Stresses prefill throughput / KV-cache fill with minimal decoding work.
 # Uses LongBench v2 real documents as base text for realistic attention patterns.
 dataset_names: ["longbench_v2"]
@@ -7,6 +7,6 @@ model_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
 dataset_split: train
 
 fixed_length_mode: true
-target_input_tokens: 32768
+target_input_tokens: 24576
 target_output_tokens: 1
 num_samples: 100

@@ -1,5 +1,5 @@
 # LongBench v2: real long-context documents, truncated to fit bs=128.
-# Qwen1.5-MoE: 32K context, 28.6GB weights, KV=12KB/tok → 32K fits at bs=128.
+# Qwen1.5-MoE: 32K context, 75% = 24K. KV=12KB/tok, 28.6GB weights.
 dataset_names: ["longbench_v2"]
 metrics: ["em"]
 model_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
@@ -8,5 +8,5 @@ dataset_split: train
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 32768
+target_input_tokens: 24576
 target_output_tokens: 1

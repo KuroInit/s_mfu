@@ -1,6 +1,6 @@
-# LongBench v2: max context window test.
-# DeepSeek-V2-Lite: 163K context, 31.4GB weights, MLA KV=31KB/tok.
-# At 163K tokens: bs=1 → ~40GB, bs=8 → ~190GB (OOM). Max safe bs=8.
+# LongBench v2: 75% max context window test.
+# DeepSeek-V2-Lite: 163K max context, 75% = 122K. MLA KV=31KB/tok, 31.4GB weights.
+# At 122K tokens: bs=1 → ~40GB, bs=8 → ~66GB. Max safe bs=8.
 dataset_names: ["longbench_v2"]
 metrics: ["em"]
 model_id: deepseek-ai/DeepSeek-V2-Lite-Chat
@@ -9,6 +9,6 @@ dataset_split: train
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 163840
+target_input_tokens: 122880
 target_output_tokens: 1
 max_batch_size: 8

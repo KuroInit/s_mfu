@@ -1,4 +1,4 @@
-# Prefill-heavy benchmark: 32K input tokens, 1 output token
+# Prefill-heavy benchmark: 75% of 163K context = 122K input tokens, 1 output token
 # Stresses prefill throughput / KV-cache fill with minimal decoding work.
 # Uses LongBench v2 real documents as base text for realistic attention patterns.
 dataset_names: ["longbench_v2"]
@@ -7,8 +7,8 @@ model_id: deepseek-ai/DeepSeek-V2-Lite-Chat
 dataset_split: train
 
 fixed_length_mode: true
-target_input_tokens: 32768
+target_input_tokens: 122880
 target_output_tokens: 1
 num_samples: 100
-# DeepSeek-V2-Lite: MLA KV=31KB/tok, 31.4GB weights → max bs=32 at 32K input.
-max_batch_size: 32
+# DeepSeek-V2-Lite: MLA KV=31KB/tok, 31.4GB weights → max bs=8 at 122K input.
+max_batch_size: 8

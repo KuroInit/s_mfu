@@ -1,6 +1,6 @@
-# LongBench v2: max context window test.
-# Qwen3-30B: 40K context, 60GB weights, KV=48KB/tok.
-# At 40K tokens: bs=1 → ~68GB, bs=8 → ~83GB, bs=16 → ~98GB (OOM). Max safe bs=8.
+# LongBench v2: 75% max context window test.
+# Qwen3-30B: 40K max context, 75% = 30K. KV=48KB/tok, 60GB weights.
+# At 30K tokens: bs=1 → ~63GB, bs=16 → ~85GB. Max safe bs=16.
 dataset_names: ["longbench_v2"]
 metrics: ["em"]
 model_id: Qwen/Qwen3-30B-A3B
@@ -9,6 +9,6 @@ dataset_split: train
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 40960
+target_input_tokens: 30720
 target_output_tokens: 1
-max_batch_size: 8
+max_batch_size: 16

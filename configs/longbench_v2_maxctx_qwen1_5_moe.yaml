@@ -1,5 +1,5 @@
-# LongBench v2: max context window test.
-# Qwen1.5-MoE: 32K context, 28.6GB weights, KV=12KB/tok.
+# LongBench v2: 75% max context window test.
+# Qwen1.5-MoE: 32K max context, 75% = 24K. KV=12KB/tok, 28.6GB weights.
 # All batch sizes [1,32,64,128] fit within 94GB single GPU.
 dataset_names: ["longbench_v2"]
 metrics: ["em"]
@@ -9,6 +9,6 @@ dataset_split: train
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 32768
+target_input_tokens: 24576
 target_output_tokens: 1
 max_batch_size: 128

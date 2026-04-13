@@ -1,3 +1,6 @@
 dataset_names: ["numinamath"]
 metrics: ["em", "f1"]
 model_id: deepseek-ai/DeepSeek-V2-Lite-Chat
+precision: bfloat16
+dataset_split: test
+num_samples: 200

@@ -1,3 +1,6 @@
 dataset_names: ["gsm8k"]
 metrics: ["em", "f1"]
 model_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
+precision: bfloat16
+dataset_split: test
+num_samples: 200

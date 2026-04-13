@@ -1,5 +1,5 @@
 batch_sizes: [1, 32, 64, 128]
-datasets: [gsm8k, numinamath, prefill]
+datasets: [longbench_v2, gsm8k, numinamath, prefill]
 port: 30000
 
 models:

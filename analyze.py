@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 from moe_cap.configs import CAPConfig
 from moe_cap.model_loader import HFModelInfoRetriever
 from moe_cap.utils.continuous_batching_utils import _calculate_continuous_metrics
+from moe_cap.utils.hardware_utils import get_peak_flops
 
 
 def find_latest_file(directory: Path, pattern: str) -> Optional[Path]:
@@ -73,22 +74,59 @@ def normalize_records(records: list) -> list:
     """Return copies of records with a 'latency' key added.
 
     _calculate_continuous_metrics expects 'latency'; the stored files use
-    'ttft' (prefill) and 'tpot' (decoding). Uses explicit None-check so that
-    a ttft of 0.0 is not silently replaced by tpot.
+    'ttft' (prefill) and 'tpot' (decoding). Selection is based on
+    forward_mode so that decoding records always use tpot even if ttft
+    is present.
     """
     normalized = []
     for r in records:
         r2 = dict(r)
-        r2["latency"] = r["ttft"] if r.get("ttft") is not None else r.get("tpot", 0)
+        if r.get("forward_mode") == "prefill":
+            r2["latency"] = r.get("ttft") if r.get("ttft") is not None else r.get("tpot", 0)
+        else:
+            r2["latency"] = r.get("tpot") if r.get("tpot") is not None else r.get("ttft", 0)
         normalized.append(r2)
     return normalized
+
+
+def _run_metrics(records, model_name, precision_str, num_gpus, gpu_raw_type, cap_config):
+    """Run _calculate_continuous_metrics for a given model_name and return the result dict."""
+    retriever = HFModelInfoRetriever(cap_config)
+    arch = retriever.get_architecture_info()
+    moe_info = retriever.get_moe_info()
+    attn_info = retriever.get_attention_info()
+
+    try:
+        return _calculate_continuous_metrics(
+            n_layers=arch.get("num_hidden_layers"),
+            d_model=arch.get("hidden_size"),
+            gpu_raw_type=gpu_raw_type,
+            n_attn_heads=attn_info.get("num_attention_heads"),
+            d_head=attn_info.get("head_dim"),
+            n_kv_heads=attn_info.get("num_key_value_heads"),
+            d_ff=moe_info.get("ffn_dim"),
+            hf_config=retriever.hf_config,
+            num_gpus=num_gpus,
+            model_name=model_name,
+            used_dtype=precision_str,
+            precision=retriever.get_model_precision_bytes(),
+            output_data=records,
+        )
+    except KeyError as e:
+        warnings.warn(f"Unknown GPU type {e} — skipping")
+        return None
+    except Exception as e:
+        warnings.warn(f"compute metrics failed: {e} — skipping")
+        return None
 
 
 def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
     """Recompute S_MFU/S_MBU from per-step records using MoE-CAP internals.
 
-    Returns dict with prefill_smfu, decoding_smfu, prefill_smbu, decoding_smbu
-    (all in percent, 0-100), or None on failure.
+    Returns dict with prefill_smfu, decoding_smfu, prefill_smbu, decoding_smbu,
+    prefill_raw_tflops, decoding_raw_tflops (all S-M* in percent 0-100).
+    For Qwen3-Next models, also includes *_legacy keys for comparison.
+    Returns None on failure.
     """
     if not records:
         return None
@@ -105,53 +143,46 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         model_id=model_name,
         precision=precision_str,
     )
-    retriever = HFModelInfoRetriever(cap_config)
 
-    arch = retriever.get_architecture_info()
-    moe_info = retriever.get_moe_info()
-    attn_info = retriever.get_attention_info()
-
-    n_layers = arch.get("num_hidden_layers")
-    d_model = arch.get("hidden_size")
-    d_ff = moe_info.get("ffn_dim")
-    n_attn_heads = attn_info.get("num_attention_heads")
-    n_kv_heads = attn_info.get("num_key_value_heads")
-    d_head = attn_info.get("head_dim")
-    precision_bytes = retriever.get_model_precision_bytes()
-    used_dtype = precision_str
-
-    try:
-        result = _calculate_continuous_metrics(
-            n_layers=n_layers,
-            d_model=d_model,
-            gpu_raw_type=gpu_raw_type,
-            n_attn_heads=n_attn_heads,
-            d_head=d_head,
-            n_kv_heads=n_kv_heads,
-            d_ff=d_ff,
-            hf_config=retriever.hf_config,
-            num_gpus=num_gpus,
-            model_name=model_name,
-            used_dtype=used_dtype,
-            precision=precision_bytes,
-            output_data=records,
-        )
-    except KeyError as e:
-        warnings.warn(f"Unknown GPU type {e} — skipping")
-        return None
-    except Exception as e:
-        warnings.warn(f"compute_smfu_smbu failed: {e} — skipping")
-        return None
-
+    # Primary computation (uses correct dispatch for all models including Qwen3-Next)
+    result = _run_metrics(records, model_name, precision_str, num_gpus, gpu_raw_type, cap_config)
     if not result:
         return None
 
-    return {
-        "prefill_smfu":   result.get("prefill_smfu", 0) * 100,
-        "decoding_smfu":  result.get("decoding_smfu", 0) * 100,
+    # Compute raw TFLOPS
+    try:
+        peak_flops_raw = get_peak_flops(gpu_raw_type, precision_str)
+        peak_tflops = peak_flops_raw / 1e12
+    except KeyError:
+        peak_tflops = 0
+
+    prefill_smfu_frac = result.get("prefill_smfu", 0)
+    decoding_smfu_frac = result.get("decoding_smfu", 0)
+
+    metrics = {
+        "prefill_smfu":   prefill_smfu_frac * 100,
+        "decoding_smfu":  decoding_smfu_frac * 100,
         "prefill_smbu":   result.get("prefill_smbu", 0) * 100,
         "decoding_smbu":  result.get("decoding_smbu", 0) * 100,
+        "prefill_raw_tflops":  prefill_smfu_frac * num_gpus * peak_tflops / 2,
+        "decoding_raw_tflops": decoding_smfu_frac * num_gpus * peak_tflops / 2,
     }
+
+    # For Qwen3-Next: also compute with legacy Qwen3 path for comparison
+    if "Qwen3-Next" in model_name:
+        legacy_name = model_name.replace("Qwen3-Next", "Qwen3")
+        legacy_result = _run_metrics(records, legacy_name, precision_str, num_gpus, gpu_raw_type, cap_config)
+        if legacy_result:
+            leg_prefill = legacy_result.get("prefill_smfu", 0)
+            leg_decode = legacy_result.get("decoding_smfu", 0)
+            metrics["prefill_smfu_legacy"] = leg_prefill * 100
+            metrics["decoding_smfu_legacy"] = leg_decode * 100
+            metrics["prefill_smbu_legacy"] = legacy_result.get("prefill_smbu", 0) * 100
+            metrics["decoding_smbu_legacy"] = legacy_result.get("decoding_smbu", 0) * 100
+            metrics["prefill_raw_tflops_legacy"] = leg_prefill * num_gpus * peak_tflops / 2
+            metrics["decoding_raw_tflops_legacy"] = leg_decode * num_gpus * peak_tflops / 2
+
+    return metrics
 
 
 def aggregate_results(raw: list) -> dict:
@@ -161,14 +192,13 @@ def aggregate_results(raw: list) -> dict:
         raw: list of (slug, batch_size, metrics_dict) tuples
 
     Returns:
-        {slug: {batch_size: {prefill_smfu, decoding_smfu, prefill_smbu, decoding_smbu}}}
+        {slug: {batch_size: {metric_key: averaged_value, ...}}}
     """
-    keys = ["prefill_smfu", "decoding_smfu", "prefill_smbu", "decoding_smbu"]
     accum = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
     for slug, bs, metrics in raw:
-        for k in keys:
-            accum[slug][bs][k].append(metrics[k])
+        for k, v in metrics.items():
+            accum[slug][bs][k].append(v)
 
     result = {}
     for slug, bs_data in accum.items():
@@ -178,56 +208,46 @@ def aggregate_results(raw: list) -> dict:
     return result
 
 
-def plot_metric(data: dict, metric_label: str, prefill_key: str,
-               decoding_key: str, out_path: Path) -> None:
-    """Plot prefill and decoding metric vs batch size for each model.
+def plot_single_metric(slug: str, bs_data: dict, metric_label: str,
+                       prefill_key: str, decoding_key: str, out_path: Path,
+                       prefill_legacy_key: str = None,
+                       decoding_legacy_key: str = None) -> None:
+    """Plot prefill and decoding metric vs batch size for a single model."""
+    batch_sizes = sorted(bs_data.keys())
+    if not batch_sizes:
+        return
 
-    Args:
-        data: {slug: {batch_size: {prefill_key: float, decoding_key: float}}}
-        metric_label: shown in figure title and y-axis label
-        prefill_key: key in the inner dict for prefill values
-        decoding_key: key in the inner dict for decoding values
-        out_path: where to save the PNG
-    """
-    slugs = sorted(data.keys())
-    n = len(slugs)
-    if n == 0:
-        print(f"No model data to plot for {metric_label}. Exiting.", file=sys.stderr)
-        sys.exit(1)
+    prefill_vals = [bs_data[bs].get(prefill_key, 0) for bs in batch_sizes]
+    decoding_vals = [bs_data[bs].get(decoding_key, 0) for bs in batch_sizes]
 
-    n_cols = math.ceil(math.sqrt(n))
-    n_rows = math.ceil(n / n_cols)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(batch_sizes, prefill_vals, "o--", label="Prefill")
+    ax.plot(batch_sizes, decoding_vals, "s-", label="Decoding")
 
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(5 * n_cols, 4 * n_rows),
-                             squeeze=False)
-    fig.suptitle(metric_label, fontsize=14)
+    # Legacy comparison lines (Qwen3-Next only)
+    has_legacy = (prefill_legacy_key
+                  and any(prefill_legacy_key in bs_data[bs] for bs in batch_sizes))
+    if has_legacy:
+        leg_prefill = [bs_data[bs].get(prefill_legacy_key, 0) for bs in batch_sizes]
+        leg_decode = [bs_data[bs].get(decoding_legacy_key, 0) for bs in batch_sizes]
+        ax.plot(batch_sizes, leg_prefill, "o:", color="tab:blue", alpha=0.4,
+                label="Prefill (Qwen3 legacy)")
+        ax.plot(batch_sizes, leg_decode, "s:", color="tab:orange", alpha=0.4,
+                label="Decoding (Qwen3 legacy)")
 
-    for idx, slug in enumerate(slugs):
-        row, col = divmod(idx, n_cols)
-        ax = axes[row][col]
+    ax.set_xscale("log")
+    ax.set_xticks(batch_sizes)
+    ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax.set_xlabel("Batch Size")
+    ax.set_ylabel(metric_label)
+    ax.set_title(f"{slug} — {metric_label}")
+    ax.legend()
 
-        bs_data = data[slug]
-        batch_sizes = sorted(bs_data.keys())
-        prefill_vals = [bs_data[bs][prefill_key] for bs in batch_sizes]
-        decoding_vals = [bs_data[bs][decoding_key] for bs in batch_sizes]
-
-        ax.plot(batch_sizes, prefill_vals, linestyle="--", label="Prefill")
-        ax.plot(batch_sizes, decoding_vals, linestyle="-",  label="Decoding")
-        ax.set_xscale("log")
-        ax.set_xticks(batch_sizes)
-        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    if "%" in metric_label:
         ax.set_ylim(0, 100)
-        ax.set_xlabel("Batch Size")
-        ax.set_ylabel(f"{metric_label} (%)")
-        ax.set_title(slug)
+    else:
+        ax.set_ylim(bottom=0)
 
-    for idx in range(n, n_rows * n_cols):
-        row, col = divmod(idx, n_cols)
-        axes[row][col].set_visible(False)
-
-    handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower right")
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -290,7 +310,13 @@ def main() -> None:
         raw.append((slug, bs, metrics))
         print(f"  {slug} bs={bs} {dataset}: "
               f"decode S-MFU={metrics['decoding_smfu']:.1f}% "
-              f"S-MBU={metrics['decoding_smbu']:.1f}%")
+              f"S-MBU={metrics['decoding_smbu']:.1f}% "
+              f"TFLOPS={metrics['decoding_raw_tflops']:.1f}")
+        if "decoding_smfu_legacy" in metrics:
+            print(f"    legacy: "
+                  f"S-MFU={metrics['decoding_smfu_legacy']:.1f}% "
+                  f"S-MBU={metrics['decoding_smbu_legacy']:.1f}% "
+                  f"TFLOPS={metrics['decoding_raw_tflops_legacy']:.1f}")
 
     if not raw:
         print("No valid results found.", file=sys.stderr)
@@ -298,12 +324,27 @@ def main() -> None:
 
     data = aggregate_results(raw)
 
-    plot_metric(data, "S_MFU", prefill_key="prefill_smfu",
-                decoding_key="decoding_smfu",
-                out_path=results_dir / "smfu.png")
-    plot_metric(data, "S_MBU", prefill_key="prefill_smbu",
-                decoding_key="decoding_smbu",
-                out_path=results_dir / "smbu.png")
+    for slug in sorted(data.keys()):
+        bs_data = data[slug]
+
+        plot_single_metric(
+            slug, bs_data, "S_MFU (%)",
+            "prefill_smfu", "decoding_smfu",
+            results_dir / f"smfu_{slug}.png",
+            "prefill_smfu_legacy", "decoding_smfu_legacy",
+        )
+        plot_single_metric(
+            slug, bs_data, "S_MBU (%)",
+            "prefill_smbu", "decoding_smbu",
+            results_dir / f"smbu_{slug}.png",
+            "prefill_smbu_legacy", "decoding_smbu_legacy",
+        )
+        plot_single_metric(
+            slug, bs_data, "TFLOPS",
+            "prefill_raw_tflops", "decoding_raw_tflops",
+            results_dir / f"raw_flops_{slug}.png",
+            "prefill_raw_tflops_legacy", "decoding_raw_tflops_legacy",
+        )
 
 
 if __name__ == "__main__":

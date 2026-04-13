@@ -192,30 +192,191 @@ def test_aggregate_multiple_models_and_batch_sizes():
     assert set(agg.keys()) == {"model_a", "model_b"}
     assert set(agg["model_a"].keys()) == {1, 32}
 
-# ── plot_metric ───────────────────────────────────────────────────────────────
+# ── plot_single_metric ────────────────────────────────────────────────────────
 
-def test_plot_metric_saves_file(tmp_path):
-    from analyze import plot_metric
-    data = {
-        "model_a": {1: {"prefill_smfu": 10.0, "decoding_smfu": 5.0},
-                    32: {"prefill_smfu": 40.0, "decoding_smfu": 35.0}},
-    }
-    out = tmp_path / "smfu.png"
-    plot_metric(data, "smfu", prefill_key="prefill_smfu",
-                decoding_key="decoding_smfu", out_path=out)
+def test_plot_single_metric_saves_file(tmp_path):
+    from analyze import plot_single_metric
+    bs_data = {1: {"prefill_smfu": 10.0, "decoding_smfu": 5.0},
+               32: {"prefill_smfu": 40.0, "decoding_smfu": 35.0}}
+    out = tmp_path / "smfu_model_a.png"
+    plot_single_metric("model_a", bs_data, "S_MFU (%)",
+                       "prefill_smfu", "decoding_smfu", out)
     assert out.exists()
 
-def test_plot_metric_overwrites_existing(tmp_path):
-    from analyze import plot_metric
-    data = {"model_a": {1: {"prefill_smfu": 10.0, "decoding_smfu": 5.0}}}
-    out = tmp_path / "smfu.png"
+def test_plot_single_metric_overwrites_existing(tmp_path):
+    from analyze import plot_single_metric
+    bs_data = {1: {"prefill_smfu": 10.0, "decoding_smfu": 5.0}}
+    out = tmp_path / "smfu_model_a.png"
     out.write_bytes(b"old content")
-    plot_metric(data, "smfu", prefill_key="prefill_smfu",
-                decoding_key="decoding_smfu", out_path=out)
+    plot_single_metric("model_a", bs_data, "S_MFU (%)",
+                       "prefill_smfu", "decoding_smfu", out)
     assert out.stat().st_size != len(b"old content")
 
-def test_plot_metric_exits_on_empty_data(tmp_path):
-    from analyze import plot_metric
-    with pytest.raises(SystemExit):
-        plot_metric({}, "smfu", prefill_key="prefill_smfu",
-                    decoding_key="decoding_smfu", out_path=tmp_path / "smfu.png")
+def test_plot_single_metric_no_data_does_nothing(tmp_path):
+    from analyze import plot_single_metric
+    out = tmp_path / "smfu_empty.png"
+    plot_single_metric("empty", {}, "S_MFU (%)",
+                       "prefill_smfu", "decoding_smfu", out)
+    assert not out.exists()
+
+def test_plot_single_metric_with_legacy_keys(tmp_path):
+    from analyze import plot_single_metric
+    bs_data = {
+        1: {"prefill_smfu": 10.0, "decoding_smfu": 5.0,
+            "prefill_smfu_legacy": 12.0, "decoding_smfu_legacy": 6.0},
+        32: {"prefill_smfu": 40.0, "decoding_smfu": 35.0,
+             "prefill_smfu_legacy": 45.0, "decoding_smfu_legacy": 38.0},
+    }
+    out = tmp_path / "smfu_qwen3_next.png"
+    plot_single_metric("Qwen3-Next-80B", bs_data, "S_MFU (%)",
+                       "prefill_smfu", "decoding_smfu", out,
+                       "prefill_smfu_legacy", "decoding_smfu_legacy")
+    assert out.exists()
+
+
+# ── normalize_records forward_mode dispatch ──────────────────────────────────
+
+def test_normalize_decoding_with_both_ttft_and_tpot_uses_tpot():
+    """Decoding records that have both ttft and tpot must use tpot."""
+    from analyze import normalize_records
+    records = [{"forward_mode": "decoding", "ttft": 0.5, "tpot": 0.02,
+                "batch_size": 32, "seq_lens_sum": 0, "expert_activation": 0.5}]
+    result = normalize_records(records)
+    assert result[0]["latency"] == 0.02
+
+def test_normalize_prefill_with_both_ttft_and_tpot_uses_ttft():
+    """Prefill records that have both ttft and tpot must use ttft."""
+    from analyze import normalize_records
+    records = [{"forward_mode": "prefill", "ttft": 0.05, "tpot": 0.02,
+                "batch_size": 1, "seq_lens_sum": 100, "expert_activation": 0.3}]
+    result = normalize_records(records)
+    assert result[0]["latency"] == 0.05
+
+def test_normalize_decoding_without_tpot_falls_back_to_ttft():
+    """Decoding records missing tpot should fall back to ttft."""
+    from analyze import normalize_records
+    records = [{"forward_mode": "decoding", "ttft": 0.5,
+                "batch_size": 32, "seq_lens_sum": 0, "expert_activation": 0.5}]
+    result = normalize_records(records)
+    assert result[0]["latency"] == 0.5
+
+def test_normalize_unknown_mode_uses_tpot():
+    """Records with unknown forward_mode should use tpot (decoding path)."""
+    from analyze import normalize_records
+    records = [{"forward_mode": "unknown", "tpot": 0.03,
+                "batch_size": 1, "seq_lens_sum": 0, "expert_activation": 0.0}]
+    result = normalize_records(records)
+    assert result[0]["latency"] == 0.03
+
+
+# ── compute_smfu_smbu raw TFLOPS ─────────────────────────────────────────────
+
+def test_compute_smfu_smbu_includes_raw_tflops():
+    from analyze import compute_smfu_smbu
+    meta = _make_meta()
+    records = _make_records()
+    fake_result = {
+        "prefill_smfu": 0.42, "prefill_smbu": 0.55,
+        "decoding_smfu": 0.30, "decoding_smbu": 0.88,
+    }
+    with patch("analyze.HFModelInfoRetriever", return_value=_mock_retriever()), \
+         patch("analyze._calculate_continuous_metrics", return_value=fake_result), \
+         patch("analyze.get_peak_flops", return_value=1979e12):
+        result = compute_smfu_smbu(records, meta)
+    assert "prefill_raw_tflops" in result
+    assert "decoding_raw_tflops" in result
+    # raw_tflops = smfu_fraction * num_gpus * peak_tflops / 2
+    expected_prefill = 0.42 * 1 * 1979 / 2
+    expected_decoding = 0.30 * 1 * 1979 / 2
+    assert result["prefill_raw_tflops"] == pytest.approx(expected_prefill, rel=1e-3)
+    assert result["decoding_raw_tflops"] == pytest.approx(expected_decoding, rel=1e-3)
+
+
+# ── compute_smfu_smbu Qwen3-Next legacy comparison ───────────────────────────
+
+def test_compute_smfu_smbu_qwen3_next_includes_legacy():
+    from analyze import compute_smfu_smbu
+    meta = _make_meta(model_name="Qwen/Qwen3-Next-80B-A3B-Instruct")
+    records = _make_records()
+    fake_primary = {
+        "prefill_smfu": 0.20, "prefill_smbu": 0.30,
+        "decoding_smfu": 0.15, "decoding_smbu": 0.40,
+    }
+    fake_legacy = {
+        "prefill_smfu": 0.50, "prefill_smbu": 0.60,
+        "decoding_smfu": 0.45, "decoding_smbu": 0.70,
+    }
+    call_count = {"n": 0}
+    original_results = [fake_primary, fake_legacy]
+
+    def fake_run_metrics(records, model_name, *args, **kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        return original_results[idx]
+
+    with patch("analyze._run_metrics", side_effect=fake_run_metrics), \
+         patch("analyze.get_peak_flops", return_value=1979e12):
+        result = compute_smfu_smbu(records, meta)
+
+    # Primary metrics (Qwen3-Next correct path)
+    assert result["prefill_smfu"] == pytest.approx(20.0)
+    assert result["decoding_smfu"] == pytest.approx(15.0)
+    # Legacy metrics (Qwen3 path for comparison)
+    assert result["prefill_smfu_legacy"] == pytest.approx(50.0)
+    assert result["decoding_smfu_legacy"] == pytest.approx(45.0)
+    assert result["prefill_smbu_legacy"] == pytest.approx(60.0)
+    assert result["decoding_smbu_legacy"] == pytest.approx(70.0)
+
+
+def test_compute_smfu_smbu_non_qwen3_next_has_no_legacy():
+    from analyze import compute_smfu_smbu
+    meta = _make_meta(model_name="Qwen/Qwen3-30B-A3B")
+    records = _make_records()
+    fake_result = {
+        "prefill_smfu": 0.42, "prefill_smbu": 0.55,
+        "decoding_smfu": 0.30, "decoding_smbu": 0.88,
+    }
+    with patch("analyze._run_metrics", return_value=fake_result), \
+         patch("analyze.get_peak_flops", return_value=1979e12):
+        result = compute_smfu_smbu(records, meta)
+
+    assert "prefill_smfu_legacy" not in result
+    assert "decoding_smfu_legacy" not in result
+
+
+# ── aggregate_results with FLOPS keys ────────────────────────────────────────
+
+def test_aggregate_includes_raw_tflops():
+    from analyze import aggregate_results
+    raw = [
+        ("model_a", 32, {"prefill_smfu": 40.0, "decoding_smfu": 30.0,
+                          "prefill_smbu": 50.0, "decoding_smbu": 80.0,
+                          "prefill_raw_tflops": 400.0, "decoding_raw_tflops": 300.0}),
+        ("model_a", 32, {"prefill_smfu": 60.0, "decoding_smfu": 50.0,
+                          "prefill_smbu": 70.0, "decoding_smbu": 60.0,
+                          "prefill_raw_tflops": 600.0, "decoding_raw_tflops": 500.0}),
+    ]
+    agg = aggregate_results(raw)
+    assert agg["model_a"][32]["prefill_raw_tflops"] == pytest.approx(500.0)
+    assert agg["model_a"][32]["decoding_raw_tflops"] == pytest.approx(400.0)
+
+
+# ── plot_single_metric for raw TFLOPS ─────────────────────────────────────────
+
+def test_plot_single_metric_tflops_saves_file(tmp_path):
+    from analyze import plot_single_metric
+    bs_data = {
+        1: {"prefill_raw_tflops": 10.0, "decoding_raw_tflops": 5.0},
+        32: {"prefill_raw_tflops": 200.0, "decoding_raw_tflops": 150.0},
+    }
+    out = tmp_path / "raw_flops_model_a.png"
+    plot_single_metric("model_a", bs_data, "TFLOPS",
+                       "prefill_raw_tflops", "decoding_raw_tflops", out)
+    assert out.exists()
+
+def test_plot_single_metric_tflops_no_data(tmp_path):
+    from analyze import plot_single_metric
+    out = tmp_path / "raw_flops_empty.png"
+    plot_single_metric("empty", {}, "TFLOPS",
+                       "prefill_raw_tflops", "decoding_raw_tflops", out)
+    assert not out.exists()

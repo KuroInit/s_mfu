@@ -216,9 +216,10 @@ def _get_max_batch_size(config_file: str) -> Optional[int]:
         return None
 
 
-def _get_max_input_tokens(slug: str, datasets: list) -> int:
-    """Return the largest target_input_tokens across all dataset configs for a model slug.
+def _get_max_input_tokens(slug: str, datasets: list, batch_size: int) -> int:
+    """Return the largest target_input_tokens across dataset configs that will run at this batch_size.
 
+    Skips datasets whose max_batch_size < batch_size (they won't run anyway).
     Used to set --chunked-prefill-size so each request's full prefill fits in one chunk.
     """
     max_tokens = 0
@@ -227,11 +228,14 @@ def _get_max_input_tokens(slug: str, datasets: list) -> int:
         try:
             with open(config_file, "r") as f:
                 cfg = yaml.safe_load(f) or {}
-            tokens = cfg.get("target_input_tokens", 0)
-            if tokens > max_tokens:
-                max_tokens = tokens
         except FileNotFoundError:
-            pass
+            continue
+        max_bs = cfg.get("max_batch_size")
+        if max_bs is not None and batch_size > max_bs:
+            continue
+        tokens = cfg.get("target_input_tokens", 0)
+        if tokens > max_tokens:
+            max_tokens = tokens
     return max_tokens
 
 
@@ -258,11 +262,6 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
         slug = model["slug"]
         tp = model["tp"]
 
-        # Compute chunked-prefill-size: largest input across all datasets + 50 buffer
-        # so each request's full prefill fits in one chunk (follows MoE-CAP convention)
-        max_input = _get_max_input_tokens(slug, datasets)
-        prefill_size = max_input + 50 if max_input > 0 else None
-
         for batch_size in batch_sizes:
             # Skip entire (model, batch_size) if all datasets already succeeded
             if all(checkpoint.is_done(model_id, batch_size, ds) for ds in datasets):
@@ -270,9 +269,14 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                 done += len(datasets)
                 continue
 
+            # Compute chunked-prefill-size: largest input across datasets that
+            # will run at this batch_size + 50 buffer (follows MoE-CAP convention)
+            max_input = _get_max_input_tokens(slug, datasets, batch_size)
+            prefill_size = max_input + 50 if max_input > 0 else None
+
             sep = "=" * 60
             print(f"\n{sep}")
-            print(f"[sweep] {slug}  bs={batch_size}  tp={tp}")
+            print(f"[sweep] {slug}  bs={batch_size}  tp={tp}  chunked_prefill_size={prefill_size}")
             print(sep)
 
             proc = start_sglang(model_id, tp, batch_size, port, prefill_size)

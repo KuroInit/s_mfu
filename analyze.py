@@ -157,15 +157,11 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         peak_tflops = 0
 
     prefill_smfu_frac = result.get("prefill_smfu", 0)
-    decoding_smfu_frac = result.get("decoding_smfu", 0)
 
     metrics = {
-        "prefill_smfu":   prefill_smfu_frac * 100,
-        "decoding_smfu":  decoding_smfu_frac * 100,
-        "prefill_smbu":   result.get("prefill_smbu", 0) * 100,
-        "decoding_smbu":  result.get("decoding_smbu", 0) * 100,
+        "prefill_smfu":        prefill_smfu_frac * 100,
+        "prefill_smbu":        result.get("prefill_smbu", 0) * 100,
         "prefill_raw_tflops":  prefill_smfu_frac * num_gpus * peak_tflops / 2,
-        "decoding_raw_tflops": decoding_smfu_frac * num_gpus * peak_tflops / 2,
     }
 
     # For Qwen3-Next: also compute with legacy Qwen3 path for comparison
@@ -174,13 +170,9 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         legacy_result = _run_metrics(records, legacy_name, precision_str, num_gpus, gpu_raw_type, cap_config)
         if legacy_result:
             leg_prefill = legacy_result.get("prefill_smfu", 0)
-            leg_decode = legacy_result.get("decoding_smfu", 0)
             metrics["prefill_smfu_legacy"] = leg_prefill * 100
-            metrics["decoding_smfu_legacy"] = leg_decode * 100
             metrics["prefill_smbu_legacy"] = legacy_result.get("prefill_smbu", 0) * 100
-            metrics["decoding_smbu_legacy"] = legacy_result.get("decoding_smbu", 0) * 100
             metrics["prefill_raw_tflops_legacy"] = leg_prefill * num_gpus * peak_tflops / 2
-            metrics["decoding_raw_tflops_legacy"] = leg_decode * num_gpus * peak_tflops / 2
 
     return metrics
 
@@ -209,31 +201,25 @@ def aggregate_results(raw: list) -> dict:
 
 
 def plot_single_metric(slug: str, bs_data: dict, metric_label: str,
-                       prefill_key: str, decoding_key: str, out_path: Path,
-                       prefill_legacy_key: str = None,
-                       decoding_legacy_key: str = None) -> None:
-    """Plot prefill and decoding metric vs batch size for a single model."""
+                       prefill_key: str, out_path: Path,
+                       prefill_legacy_key: str = None) -> None:
+    """Plot prefill metric vs batch size for a single model."""
     batch_sizes = sorted(bs_data.keys())
     if not batch_sizes:
         return
 
     prefill_vals = [bs_data[bs].get(prefill_key, 0) for bs in batch_sizes]
-    decoding_vals = [bs_data[bs].get(decoding_key, 0) for bs in batch_sizes]
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(batch_sizes, prefill_vals, "o--", label="Prefill")
-    ax.plot(batch_sizes, decoding_vals, "s-", label="Decoding")
 
-    # Legacy comparison lines (Qwen3-Next only)
+    # Legacy comparison line (Qwen3-Next only)
     has_legacy = (prefill_legacy_key
                   and any(prefill_legacy_key in bs_data[bs] for bs in batch_sizes))
     if has_legacy:
         leg_prefill = [bs_data[bs].get(prefill_legacy_key, 0) for bs in batch_sizes]
-        leg_decode = [bs_data[bs].get(decoding_legacy_key, 0) for bs in batch_sizes]
         ax.plot(batch_sizes, leg_prefill, "o:", color="tab:blue", alpha=0.4,
                 label="Prefill (Qwen3 legacy)")
-        ax.plot(batch_sizes, leg_decode, "s:", color="tab:orange", alpha=0.4,
-                label="Decoding (Qwen3 legacy)")
 
     ax.set_xscale("log")
     ax.set_xticks(batch_sizes)
@@ -300,7 +286,12 @@ def main() -> None:
         if meta is None:
             continue
 
-        normalized = normalize_records(records)
+        # Only keep prefill records — decode is meaningless with target_output_tokens=1
+        prefill_records = [r for r in records if r.get("forward_mode") == "prefill"]
+        if not prefill_records:
+            warnings.warn(f"No prefill records in {slug} {bs_dir_name} {dataset} — skipping")
+            continue
+        normalized = normalize_records(prefill_records)
         metrics = compute_smfu_smbu(normalized, meta)
         if metrics is None:
             warnings.warn(f"Skipping {slug} {bs_dir_name} {dataset} — no valid metrics")
@@ -309,14 +300,14 @@ def main() -> None:
         bs = meta["system_environment"]["batch_size"]
         raw.append((slug, bs, metrics))
         print(f"  {slug} bs={bs} {dataset}: "
-              f"decode S-MFU={metrics['decoding_smfu']:.1f}% "
-              f"S-MBU={metrics['decoding_smbu']:.1f}% "
-              f"TFLOPS={metrics['decoding_raw_tflops']:.1f}")
-        if "decoding_smfu_legacy" in metrics:
+              f"prefill S-MFU={metrics['prefill_smfu']:.1f}% "
+              f"S-MBU={metrics['prefill_smbu']:.1f}% "
+              f"TFLOPS={metrics['prefill_raw_tflops']:.1f}")
+        if "prefill_smfu_legacy" in metrics:
             print(f"    legacy: "
-                  f"S-MFU={metrics['decoding_smfu_legacy']:.1f}% "
-                  f"S-MBU={metrics['decoding_smbu_legacy']:.1f}% "
-                  f"TFLOPS={metrics['decoding_raw_tflops_legacy']:.1f}")
+                  f"S-MFU={metrics['prefill_smfu_legacy']:.1f}% "
+                  f"S-MBU={metrics['prefill_smbu_legacy']:.1f}% "
+                  f"TFLOPS={metrics['prefill_raw_tflops_legacy']:.1f}")
 
     if not raw:
         print("No valid results found.", file=sys.stderr)
@@ -328,22 +319,22 @@ def main() -> None:
         bs_data = data[slug]
 
         plot_single_metric(
-            slug, bs_data, "S_MFU (%)",
-            "prefill_smfu", "decoding_smfu",
+            slug, bs_data, "Prefill S-MFU (%)",
+            "prefill_smfu",
             results_dir / f"smfu_{slug}.png",
-            "prefill_smfu_legacy", "decoding_smfu_legacy",
+            "prefill_smfu_legacy",
         )
         plot_single_metric(
-            slug, bs_data, "S_MBU (%)",
-            "prefill_smbu", "decoding_smbu",
+            slug, bs_data, "Prefill S-MBU (%)",
+            "prefill_smbu",
             results_dir / f"smbu_{slug}.png",
-            "prefill_smbu_legacy", "decoding_smbu_legacy",
+            "prefill_smbu_legacy",
         )
         plot_single_metric(
-            slug, bs_data, "TFLOPS",
-            "prefill_raw_tflops", "decoding_raw_tflops",
+            slug, bs_data, "Prefill TFLOPS",
+            "prefill_raw_tflops",
             results_dir / f"raw_flops_{slug}.png",
-            "prefill_raw_tflops_legacy", "decoding_raw_tflops_legacy",
+            "prefill_raw_tflops_legacy",
         )
 
 

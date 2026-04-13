@@ -141,7 +141,9 @@ def test_compute_smfu_smbu_returns_percentages():
          patch("analyze._calculate_continuous_metrics", return_value=fake_result):
         result = compute_smfu_smbu(records, meta)
     assert result["prefill_smfu"] == pytest.approx(42.0)
-    assert result["decoding_smbu"] == pytest.approx(88.0)
+    assert result["prefill_smbu"] == pytest.approx(55.0)
+    assert "decoding_smfu" not in result
+    assert "decoding_smbu" not in result
 
 def test_compute_smfu_smbu_returns_none_on_key_error():
     from analyze import compute_smfu_smbu
@@ -161,32 +163,32 @@ def test_compute_smfu_smbu_returns_none_on_empty_records():
 
 def test_aggregate_single_entry():
     from analyze import aggregate_results
-    raw = [("model_a", 32, {"prefill_smfu": 40.0, "decoding_smfu": 30.0,
-                             "prefill_smbu": 50.0, "decoding_smbu": 80.0})]
+    raw = [("model_a", 32, {"prefill_smfu": 40.0, "prefill_smbu": 50.0,
+                             "prefill_raw_tflops": 400.0})]
     agg = aggregate_results(raw)
     assert agg["model_a"][32]["prefill_smfu"] == pytest.approx(40.0)
 
 def test_aggregate_averages_across_datasets():
     from analyze import aggregate_results
     raw = [
-        ("model_a", 32, {"prefill_smfu": 40.0, "decoding_smfu": 30.0,
-                          "prefill_smbu": 50.0, "decoding_smbu": 80.0}),
-        ("model_a", 32, {"prefill_smfu": 60.0, "decoding_smfu": 50.0,
-                          "prefill_smbu": 70.0, "decoding_smbu": 60.0}),
+        ("model_a", 32, {"prefill_smfu": 40.0, "prefill_smbu": 50.0,
+                          "prefill_raw_tflops": 400.0}),
+        ("model_a", 32, {"prefill_smfu": 60.0, "prefill_smbu": 70.0,
+                          "prefill_raw_tflops": 600.0}),
     ]
     agg = aggregate_results(raw)
     assert agg["model_a"][32]["prefill_smfu"] == pytest.approx(50.0)
-    assert agg["model_a"][32]["decoding_smbu"] == pytest.approx(70.0)
+    assert agg["model_a"][32]["prefill_smbu"] == pytest.approx(60.0)
 
 def test_aggregate_multiple_models_and_batch_sizes():
     from analyze import aggregate_results
     raw = [
-        ("model_a", 1,  {"prefill_smfu": 10.0, "decoding_smfu": 5.0,
-                          "prefill_smbu": 90.0, "decoding_smbu": 85.0}),
-        ("model_a", 32, {"prefill_smfu": 40.0, "decoding_smfu": 35.0,
-                          "prefill_smbu": 60.0, "decoding_smbu": 55.0}),
-        ("model_b", 1,  {"prefill_smfu": 20.0, "decoding_smfu": 15.0,
-                          "prefill_smbu": 80.0, "decoding_smbu": 75.0}),
+        ("model_a", 1,  {"prefill_smfu": 10.0, "prefill_smbu": 90.0,
+                          "prefill_raw_tflops": 100.0}),
+        ("model_a", 32, {"prefill_smfu": 40.0, "prefill_smbu": 60.0,
+                          "prefill_raw_tflops": 400.0}),
+        ("model_b", 1,  {"prefill_smfu": 20.0, "prefill_smbu": 80.0,
+                          "prefill_raw_tflops": 200.0}),
     ]
     agg = aggregate_results(raw)
     assert set(agg.keys()) == {"model_a", "model_b"}
@@ -196,41 +198,38 @@ def test_aggregate_multiple_models_and_batch_sizes():
 
 def test_plot_single_metric_saves_file(tmp_path):
     from analyze import plot_single_metric
-    bs_data = {1: {"prefill_smfu": 10.0, "decoding_smfu": 5.0},
-               32: {"prefill_smfu": 40.0, "decoding_smfu": 35.0}}
+    bs_data = {1: {"prefill_smfu": 10.0},
+               32: {"prefill_smfu": 40.0}}
     out = tmp_path / "smfu_model_a.png"
-    plot_single_metric("model_a", bs_data, "S_MFU (%)",
-                       "prefill_smfu", "decoding_smfu", out)
+    plot_single_metric("model_a", bs_data, "Prefill S-MFU (%)",
+                       "prefill_smfu", out)
     assert out.exists()
 
 def test_plot_single_metric_overwrites_existing(tmp_path):
     from analyze import plot_single_metric
-    bs_data = {1: {"prefill_smfu": 10.0, "decoding_smfu": 5.0}}
+    bs_data = {1: {"prefill_smfu": 10.0}}
     out = tmp_path / "smfu_model_a.png"
     out.write_bytes(b"old content")
-    plot_single_metric("model_a", bs_data, "S_MFU (%)",
-                       "prefill_smfu", "decoding_smfu", out)
+    plot_single_metric("model_a", bs_data, "Prefill S-MFU (%)",
+                       "prefill_smfu", out)
     assert out.stat().st_size != len(b"old content")
 
 def test_plot_single_metric_no_data_does_nothing(tmp_path):
     from analyze import plot_single_metric
     out = tmp_path / "smfu_empty.png"
-    plot_single_metric("empty", {}, "S_MFU (%)",
-                       "prefill_smfu", "decoding_smfu", out)
+    plot_single_metric("empty", {}, "Prefill S-MFU (%)",
+                       "prefill_smfu", out)
     assert not out.exists()
 
 def test_plot_single_metric_with_legacy_keys(tmp_path):
     from analyze import plot_single_metric
     bs_data = {
-        1: {"prefill_smfu": 10.0, "decoding_smfu": 5.0,
-            "prefill_smfu_legacy": 12.0, "decoding_smfu_legacy": 6.0},
-        32: {"prefill_smfu": 40.0, "decoding_smfu": 35.0,
-             "prefill_smfu_legacy": 45.0, "decoding_smfu_legacy": 38.0},
+        1: {"prefill_smfu": 10.0, "prefill_smfu_legacy": 12.0},
+        32: {"prefill_smfu": 40.0, "prefill_smfu_legacy": 45.0},
     }
     out = tmp_path / "smfu_qwen3_next.png"
-    plot_single_metric("Qwen3-Next-80B", bs_data, "S_MFU (%)",
-                       "prefill_smfu", "decoding_smfu", out,
-                       "prefill_smfu_legacy", "decoding_smfu_legacy")
+    plot_single_metric("Qwen3-Next-80B", bs_data, "Prefill S-MFU (%)",
+                       "prefill_smfu", out, "prefill_smfu_legacy")
     assert out.exists()
 
 
@@ -284,12 +283,10 @@ def test_compute_smfu_smbu_includes_raw_tflops():
          patch("analyze.get_peak_flops", return_value=1979e12):
         result = compute_smfu_smbu(records, meta)
     assert "prefill_raw_tflops" in result
-    assert "decoding_raw_tflops" in result
+    assert "decoding_raw_tflops" not in result
     # raw_tflops = smfu_fraction * num_gpus * peak_tflops / 2
     expected_prefill = 0.42 * 1 * 1979 / 2
-    expected_decoding = 0.30 * 1 * 1979 / 2
     assert result["prefill_raw_tflops"] == pytest.approx(expected_prefill, rel=1e-3)
-    assert result["decoding_raw_tflops"] == pytest.approx(expected_decoding, rel=1e-3)
 
 
 # ── compute_smfu_smbu Qwen3-Next legacy comparison ───────────────────────────
@@ -320,12 +317,11 @@ def test_compute_smfu_smbu_qwen3_next_includes_legacy():
 
     # Primary metrics (Qwen3-Next correct path)
     assert result["prefill_smfu"] == pytest.approx(20.0)
-    assert result["decoding_smfu"] == pytest.approx(15.0)
+    assert "decoding_smfu" not in result
     # Legacy metrics (Qwen3 path for comparison)
     assert result["prefill_smfu_legacy"] == pytest.approx(50.0)
-    assert result["decoding_smfu_legacy"] == pytest.approx(45.0)
     assert result["prefill_smbu_legacy"] == pytest.approx(60.0)
-    assert result["decoding_smbu_legacy"] == pytest.approx(70.0)
+    assert "decoding_smfu_legacy" not in result
 
 
 def test_compute_smfu_smbu_non_qwen3_next_has_no_legacy():
@@ -341,7 +337,6 @@ def test_compute_smfu_smbu_non_qwen3_next_has_no_legacy():
         result = compute_smfu_smbu(records, meta)
 
     assert "prefill_smfu_legacy" not in result
-    assert "decoding_smfu_legacy" not in result
 
 
 # ── aggregate_results with FLOPS keys ────────────────────────────────────────
@@ -349,16 +344,13 @@ def test_compute_smfu_smbu_non_qwen3_next_has_no_legacy():
 def test_aggregate_includes_raw_tflops():
     from analyze import aggregate_results
     raw = [
-        ("model_a", 32, {"prefill_smfu": 40.0, "decoding_smfu": 30.0,
-                          "prefill_smbu": 50.0, "decoding_smbu": 80.0,
-                          "prefill_raw_tflops": 400.0, "decoding_raw_tflops": 300.0}),
-        ("model_a", 32, {"prefill_smfu": 60.0, "decoding_smfu": 50.0,
-                          "prefill_smbu": 70.0, "decoding_smbu": 60.0,
-                          "prefill_raw_tflops": 600.0, "decoding_raw_tflops": 500.0}),
+        ("model_a", 32, {"prefill_smfu": 40.0, "prefill_smbu": 50.0,
+                          "prefill_raw_tflops": 400.0}),
+        ("model_a", 32, {"prefill_smfu": 60.0, "prefill_smbu": 70.0,
+                          "prefill_raw_tflops": 600.0}),
     ]
     agg = aggregate_results(raw)
     assert agg["model_a"][32]["prefill_raw_tflops"] == pytest.approx(500.0)
-    assert agg["model_a"][32]["decoding_raw_tflops"] == pytest.approx(400.0)
 
 
 # ── plot_single_metric for raw TFLOPS ─────────────────────────────────────────
@@ -366,17 +358,17 @@ def test_aggregate_includes_raw_tflops():
 def test_plot_single_metric_tflops_saves_file(tmp_path):
     from analyze import plot_single_metric
     bs_data = {
-        1: {"prefill_raw_tflops": 10.0, "decoding_raw_tflops": 5.0},
-        32: {"prefill_raw_tflops": 200.0, "decoding_raw_tflops": 150.0},
+        1: {"prefill_raw_tflops": 10.0},
+        32: {"prefill_raw_tflops": 200.0},
     }
     out = tmp_path / "raw_flops_model_a.png"
-    plot_single_metric("model_a", bs_data, "TFLOPS",
-                       "prefill_raw_tflops", "decoding_raw_tflops", out)
+    plot_single_metric("model_a", bs_data, "Prefill TFLOPS",
+                       "prefill_raw_tflops", out)
     assert out.exists()
 
 def test_plot_single_metric_tflops_no_data(tmp_path):
     from analyze import plot_single_metric
     out = tmp_path / "raw_flops_empty.png"
-    plot_single_metric("empty", {}, "TFLOPS",
-                       "prefill_raw_tflops", "decoding_raw_tflops", out)
+    plot_single_metric("empty", {}, "Prefill TFLOPS",
+                       "prefill_raw_tflops", out)
     assert not out.exists()

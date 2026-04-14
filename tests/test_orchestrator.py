@@ -83,9 +83,29 @@ class TestCheckpoint:
         ckpt.mark("modelA", 1, "gsm8k", "failed", error="Runner crashed")
         ckpt.mark("modelA", 1, "gsm8k", "success")
         # Only one entry should remain — no stale failed entry
-        triples = [(e["model"], e["batch_size"], e["dataset"]) for e in ckpt._entries]
+        triples = [(e["slug"], e["batch_size"], e["dataset"]) for e in ckpt._entries]
         assert triples.count(("modelA", 1, "gsm8k")) == 1
         assert ckpt.is_done("modelA", 1, "gsm8k")
+
+    def test_slug_distinguishes_tp_variants(self, tmp_path):
+        """Two slugs (tp variants) of the same model_id must not collide."""
+        from orchestrator import Checkpoint
+        path = str(tmp_path / "checkpoint.yaml")
+        ckpt = Checkpoint(path=path)
+        ckpt.mark("model_tp1", 1, "ds", "success", model_id="org/M")
+        ckpt.mark("model_tp2", 1, "ds", "failed", error="oom", model_id="org/M")
+        assert ckpt.is_done("model_tp1", 1, "ds")
+        assert not ckpt.is_done("model_tp2", 1, "ds")
+
+    def test_model_id_stored_as_metadata(self, tmp_path):
+        from orchestrator import Checkpoint
+        path = str(tmp_path / "checkpoint.yaml")
+        ckpt = Checkpoint(path=path)
+        ckpt.mark("slug_a", 1, "ds", "success", model_id="org/RealModel")
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        assert data["completed"][0]["slug"] == "slug_a"
+        assert data["completed"][0]["model"] == "org/RealModel"
 
 # ─── SGLang Lifecycle Tests ──────────────────────────────────────────────────
 
@@ -295,8 +315,8 @@ class TestRunSweep:
     def test_skips_sglang_when_all_datasets_done(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint
         ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
-        ckpt.mark("org/modelA", 1, "gsm8k", "success")
-        ckpt.mark("org/modelA", 1, "numinamath", "success")
+        ckpt.mark("model_a", 1, "gsm8k", "success", model_id="org/modelA")
+        ckpt.mark("model_a", 1, "numinamath", "success", model_id="org/modelA")
         with patch("orchestrator.start_sglang") as mock_start:
             run_sweep(self._make_config(), ckpt)
         mock_start.assert_not_called()
@@ -309,15 +329,16 @@ class TestRunSweep:
                 with patch("orchestrator.kill_sglang"):
                     with patch("orchestrator.wait_port_free", return_value=True):
                         run_sweep(self._make_config(), ckpt)
-        assert not ckpt.is_done("org/modelA", 1, "gsm8k")
-        assert not ckpt.is_done("org/modelA", 1, "numinamath")
-        # Both should be recorded as failed
+        assert not ckpt.is_done("model_a", 1, "gsm8k")
+        assert not ckpt.is_done("model_a", 1, "numinamath")
+        # Both should be recorded as failed, with slug as key and model_id as metadata
         assert any(
-            e["model"] == "org/modelA" and e["dataset"] == "gsm8k" and e["status"] == "failed"
+            e["slug"] == "model_a" and e["model"] == "org/modelA"
+            and e["dataset"] == "gsm8k" and e["status"] == "failed"
             for e in ckpt._entries
         )
         assert any(
-            e["model"] == "org/modelA" and e["dataset"] == "numinamath" and e["status"] == "failed"
+            e["slug"] == "model_a" and e["dataset"] == "numinamath" and e["status"] == "failed"
             for e in ckpt._entries
         )
 
@@ -330,8 +351,8 @@ class TestRunSweep:
                     with patch("orchestrator.kill_sglang"):
                         with patch("orchestrator.wait_port_free", return_value=True):
                             run_sweep(self._make_config(), ckpt)
-        assert not ckpt.is_done("org/modelA", 1, "gsm8k")
-        assert not ckpt.is_done("org/modelA", 1, "numinamath")
+        assert not ckpt.is_done("model_a", 1, "gsm8k")
+        assert not ckpt.is_done("model_a", 1, "numinamath")
 
     def test_marks_dataset_success_on_zero_runner_exit(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint
@@ -342,8 +363,39 @@ class TestRunSweep:
                     with patch("orchestrator.kill_sglang"):
                         with patch("orchestrator.wait_port_free", return_value=True):
                             run_sweep(self._make_config(), ckpt)
-        assert ckpt.is_done("org/modelA", 1, "gsm8k")
-        assert ckpt.is_done("org/modelA", 1, "numinamath")
+        assert ckpt.is_done("model_a", 1, "gsm8k")
+        assert ckpt.is_done("model_a", 1, "numinamath")
+
+    def test_tp_variants_share_checkpoint_independently(self, tmp_path):
+        """Two sweep entries with same model_id but different slug (tp variants)
+        must each run independently — checkpoint must not deduplicate them."""
+        from orchestrator import run_sweep, Checkpoint
+        ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
+        cfg = {
+            "port": 30000,
+            "batch_sizes": [1],
+            "datasets": ["gsm8k"],
+            "models": [
+                {"id": "org/M", "slug": "m_tp1", "tp": 1, "config_slug": "m"},
+                {"id": "org/M", "slug": "m_tp2", "tp": 2, "config_slug": "m"},
+            ],
+        }
+        # Pre-mark only the tp1 variant as done — tp2 must still run
+        ckpt.mark("m_tp1", 1, "gsm8k", "success", model_id="org/M")
+        with patch("orchestrator.start_sglang", return_value=MagicMock()) as mock_start:
+            with patch("orchestrator.wait_for_health", return_value=True):
+                with patch("orchestrator.run_benchmark", return_value=0):
+                    with patch("orchestrator.kill_sglang"):
+                        with patch("orchestrator.wait_port_free", return_value=True):
+                            run_sweep(cfg, ckpt)
+        # tp1 should be skipped, tp2 should have been started exactly once
+        assert mock_start.call_count == 1
+        # Verify tp passed through correctly
+        call_kwargs = mock_start.call_args
+        # start_sglang(model_id, tp, batch_size, port, prefill_size)
+        args = call_kwargs.args
+        assert args[1] == 2  # tp=2
+        assert ckpt.is_done("m_tp2", 1, "gsm8k")
 
     def test_kill_sglang_called_in_finally_even_on_health_failure(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint
@@ -355,3 +407,108 @@ class TestRunSweep:
                     with patch("orchestrator.wait_port_free", return_value=True):
                         run_sweep(self._make_config(), ckpt)
         mock_kill.assert_called_once_with(mock_proc)
+
+
+# ─── Chunk Size Logic Tests ─────────────────────────────────────────────────
+
+class TestGetRequiredChunkSize:
+    """Verifies _get_required_chunk_size handles single vs batched prefill modes,
+    max_batch_size filtering, and missing config files correctly."""
+
+    def _write_config(self, dir_path, name, target_input_tokens=None,
+                      max_batch_size=None, prefill_mode=None):
+        cfg = {}
+        if target_input_tokens is not None:
+            cfg["target_input_tokens"] = target_input_tokens
+        if max_batch_size is not None:
+            cfg["max_batch_size"] = max_batch_size
+        if prefill_mode is not None:
+            cfg["prefill_mode"] = prefill_mode
+        (dir_path / f"{name}.yaml").write_text(yaml.dump(cfg))
+
+    def test_single_mode_returns_target_input_tokens(self, tmp_path, monkeypatch):
+        from orchestrator import _get_required_chunk_size
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "ds_slug", target_input_tokens=8000)
+        monkeypatch.chdir(tmp_path)
+        # Single mode (default) at any bs returns target_input_tokens unchanged
+        assert _get_required_chunk_size("slug", ["ds"], batch_size=1) == 8000
+        assert _get_required_chunk_size("slug", ["ds"], batch_size=64) == 8000
+
+    def test_batched_mode_scales_with_batch_size(self, tmp_path, monkeypatch):
+        from orchestrator import _get_required_chunk_size
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "ds_slug", target_input_tokens=1024,
+                           prefill_mode="batched")
+        monkeypatch.chdir(tmp_path)
+        assert _get_required_chunk_size("slug", ["ds"], batch_size=1) == 1024
+        assert _get_required_chunk_size("slug", ["ds"], batch_size=8) == 8192
+        assert _get_required_chunk_size("slug", ["ds"], batch_size=32) == 32768
+        assert _get_required_chunk_size("slug", ["ds"], batch_size=128) == 131072
+
+    def test_skips_dataset_when_batch_size_exceeds_max(self, tmp_path, monkeypatch):
+        from orchestrator import _get_required_chunk_size
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "big_slug", target_input_tokens=120000,
+                           max_batch_size=8)
+        self._write_config(configs, "small_slug", target_input_tokens=4000)
+        monkeypatch.chdir(tmp_path)
+        # At bs=4 both apply, big wins
+        assert _get_required_chunk_size("slug", ["big", "small"], batch_size=4) == 120000
+        # At bs=32 big is filtered (max_batch_size=8), only small remains
+        assert _get_required_chunk_size("slug", ["big", "small"], batch_size=32) == 4000
+
+    def test_takes_max_across_datasets_with_mixed_modes(self, tmp_path, monkeypatch):
+        from orchestrator import _get_required_chunk_size
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        # single 13K + batched 1K × bs
+        self._write_config(configs, "single_slug", target_input_tokens=13000)
+        self._write_config(configs, "batched_slug", target_input_tokens=1024,
+                           prefill_mode="batched")
+        monkeypatch.chdir(tmp_path)
+        # bs=8: single=13000, batched=8192 → max=13000
+        assert _get_required_chunk_size("slug", ["single", "batched"], batch_size=8) == 13000
+        # bs=32: single=13000, batched=32768 → max=32768
+        assert _get_required_chunk_size("slug", ["single", "batched"], batch_size=32) == 32768
+
+    def test_returns_zero_when_no_configs_match(self, tmp_path, monkeypatch):
+        from orchestrator import _get_required_chunk_size
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        monkeypatch.chdir(tmp_path)
+        assert _get_required_chunk_size("slug", ["nonexistent"], batch_size=1) == 0
+
+    def test_uses_config_slug_for_lookup(self, tmp_path, monkeypatch):
+        """run_sweep passes config_slug (not slug) so tp variants share configs."""
+        from orchestrator import _get_required_chunk_size
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "ds_basemodel", target_input_tokens=4096)
+        monkeypatch.chdir(tmp_path)
+        # config_slug="basemodel" finds the config; would-be slug "basemodel_tp2" must not
+        assert _get_required_chunk_size("basemodel", ["ds"], batch_size=1) == 4096
+        assert _get_required_chunk_size("basemodel_tp2", ["ds"], batch_size=1) == 0
+
+
+class TestChunkSizeCap:
+    """Verifies the 32K cap is applied in run_sweep."""
+
+    def test_cap_applied_at_high_batch_size(self, tmp_path, monkeypatch):
+        from orchestrator import _get_required_chunk_size, CHUNK_SIZE_CAP
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        cfg = {"target_input_tokens": 1024, "prefill_mode": "batched"}
+        (configs / "ds_slug.yaml").write_text(yaml.dump(cfg))
+        monkeypatch.chdir(tmp_path)
+        # raw requirement 128K, cap (applied in run_sweep) limits to 32K
+        raw = _get_required_chunk_size("slug", ["ds"], batch_size=128)
+        assert raw == 131072
+        # The cap itself is verified to be 32768
+        assert CHUNK_SIZE_CAP == 32768
+        # Simulate run_sweep capping logic
+        capped = min(raw + 50, CHUNK_SIZE_CAP)
+        assert capped == 32768

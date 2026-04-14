@@ -1,5 +1,12 @@
-batch_sizes: [1, 32, 64, 128]
-datasets: [longbench_v2, longbench_v2_maxctx, prefill]
+# Run 3 sweep configuration.
+# Axis 1 (real batched prefill): added "batched_prefill" dataset (1K × bs concurrent
+#   prefills packed into one scheduling step).
+# Axis 2 (resolution):
+#   - Dense log batch sizes [1,2,4,8,16,32,64,128] reveal the saturation knee.
+#   - tp variants for models that fit on 1 GPU: tp=1 AND tp=2 to quantify TP overhead.
+#     (qwen3_next_80b is tp=2 only — doesn't fit on 1 GPU.)
+batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128]
+datasets: [longbench_v2, longbench_v2_maxctx, prefill, batched_prefill]
 port: 30000
 
 models:
@@ -7,13 +14,28 @@ models:
     tp: 1
     slug: qwen1_5_moe
 
+  - id: Qwen/Qwen1.5-MoE-A2.7B-Chat
+    tp: 2
+    slug: qwen1_5_moe_tp2
+    config_slug: qwen1_5_moe
+
   - id: deepseek-ai/DeepSeek-V2-Lite-Chat
     tp: 1
     slug: deepseek_v2_lite
 
+  - id: deepseek-ai/DeepSeek-V2-Lite-Chat
+    tp: 2
+    slug: deepseek_v2_lite_tp2
+    config_slug: deepseek_v2_lite
+
   - id: Qwen/Qwen3-30B-A3B
     tp: 1
     slug: qwen3_30b
+
+  - id: Qwen/Qwen3-30B-A3B
+    tp: 2
+    slug: qwen3_30b_tp2
+    config_slug: qwen3_30b
 
   - id: Qwen/Qwen3-Next-80B-A3B-Instruct
     tp: 2

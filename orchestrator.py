@@ -54,10 +54,14 @@ class Checkpoint:
         with open(self.path, "w") as f:
             yaml.dump({"completed": self._entries}, f, default_flow_style=False)
 
-    def is_done(self, model: str, batch_size: int, dataset: str) -> bool:
-        """Return True only if the run completed with status=success."""
+    def is_done(self, slug: str, batch_size: int, dataset: str) -> bool:
+        """Return True only if the run completed with status=success.
+
+        Keyed on slug (not model_id) so multiple tp variants of the same model
+        can coexist in the same checkpoint.
+        """
         return any(
-            e["model"] == model
+            e["slug"] == slug
             and e["batch_size"] == batch_size
             and e["dataset"] == dataset
             and e["status"] == "success"
@@ -66,25 +70,28 @@ class Checkpoint:
 
     def mark(
         self,
-        model: str,
+        slug: str,
         batch_size: int,
         dataset: str,
         status: str,
         error: Optional[str] = None,
+        model_id: Optional[str] = None,
     ) -> None:
-        """Append an entry and persist immediately."""
+        """Append an entry and persist immediately. Keyed on slug."""
         entry: dict = {
-            "model": model,
+            "slug": slug,
             "batch_size": batch_size,
             "dataset": dataset,
             "status": status,
         }
+        if model_id is not None:
+            entry["model"] = model_id
         if error is not None:
             entry["error"] = error
         # Replace any existing entry for this triple so restarts don't accumulate stale entries
         self._entries = [
             e for e in self._entries
-            if not (e["model"] == model and e["batch_size"] == batch_size
+            if not (e["slug"] == slug and e["batch_size"] == batch_size
                     and e["dataset"] == dataset)
         ]
         self._entries.append(entry)
@@ -216,15 +223,23 @@ def _get_max_batch_size(config_file: str) -> Optional[int]:
         return None
 
 
-def _get_max_input_tokens(slug: str, datasets: list, batch_size: int) -> int:
-    """Return the largest target_input_tokens across dataset configs that will run at this batch_size.
+CHUNK_SIZE_CAP = 32768  # Hard cap to avoid SGLang intermediate-activation OOM at startup
 
-    Skips datasets whose max_batch_size < batch_size (they won't run anyway).
-    Used to set --chunked-prefill-size so each request's full prefill fits in one chunk.
+
+def _get_required_chunk_size(config_slug: str, datasets: list, batch_size: int) -> int:
+    """Return the minimum --chunked-prefill-size needed at this (model, batch_size).
+
+    For each applicable dataset, compute required tokens-per-step:
+      - prefill_mode=batched : batch_size * target_input_tokens (real batched prefill,
+        multiple full prefills packed into one scheduling step)
+      - prefill_mode=single (default) : target_input_tokens (single prefill per step)
+
+    Skips datasets whose max_batch_size < batch_size.
+    Returns max requirement across applicable datasets, or 0 if none apply.
     """
-    max_tokens = 0
+    max_required = 0
     for dataset in datasets:
-        config_file = f"configs/{dataset}_{slug}.yaml"
+        config_file = f"configs/{dataset}_{config_slug}.yaml"
         try:
             with open(config_file, "r") as f:
                 cfg = yaml.safe_load(f) or {}
@@ -234,9 +249,11 @@ def _get_max_input_tokens(slug: str, datasets: list, batch_size: int) -> int:
         if max_bs is not None and batch_size > max_bs:
             continue
         tokens = cfg.get("target_input_tokens", 0)
-        if tokens > max_tokens:
-            max_tokens = tokens
-    return max_tokens
+        mode = cfg.get("prefill_mode", "single")
+        required = tokens * batch_size if mode == "batched" else tokens
+        if required > max_required:
+            max_required = required
+    return max_required
 
 
 def load_sweep_config(path: str = SWEEP_CONFIG_PATH) -> dict:
@@ -261,20 +278,23 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
         model_id = model["id"]
         slug = model["slug"]
         tp = model["tp"]
+        # config_slug controls which configs/<dataset>_<config_slug>.yaml files are
+        # read. Defaults to slug — set explicitly when multiple sweep entries share
+        # the same dataset configs (e.g., tp=1 and tp=2 variants of one model).
+        config_slug = model.get("config_slug", slug)
 
         for batch_size in batch_sizes:
-            # Skip entire (model, batch_size) if all datasets already succeeded
-            if all(checkpoint.is_done(model_id, batch_size, ds) for ds in datasets):
+            # Skip entire (slug, batch_size) if all datasets already succeeded
+            if all(checkpoint.is_done(slug, batch_size, ds) for ds in datasets):
                 print(f"[sweep] Skipping {slug} bs={batch_size} — all datasets done")
                 done += len(datasets)
                 continue
 
-            # Compute chunked-prefill-size: largest input across datasets that
-            # will run at this batch_size + 50 buffer (follows MoE-CAP convention).
-            # Capped at 32768 to avoid OOM from intermediate activation memory
-            # on long-context datasets (e.g. maxctx at 122K tokens).
-            max_input = _get_max_input_tokens(slug, datasets, batch_size)
-            prefill_size = min(max_input + 50, 32768) if max_input > 0 else None
+            # Compute chunked-prefill-size from dataset configs.
+            # For prefill_mode=batched, scales with batch_size. Hard cap at
+            # CHUNK_SIZE_CAP avoids SGLang intermediate-activation OOM at startup.
+            required = _get_required_chunk_size(config_slug, datasets, batch_size)
+            prefill_size = min(required + 50, CHUNK_SIZE_CAP) if required > 0 else None
 
             sep = "=" * 60
             print(f"\n{sep}")
@@ -286,10 +306,11 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                 if not wait_for_health(port):
                     print(f"[sweep] ERROR: SGLang failed to start within {SGLANG_STARTUP_TIMEOUT}s")
                     for ds in datasets:
-                        if not checkpoint.is_done(model_id, batch_size, ds):
+                        if not checkpoint.is_done(slug, batch_size, ds):
                             checkpoint.mark(
-                                model_id, batch_size, ds, "failed",
+                                slug, batch_size, ds, "failed",
                                 f"SGLang failed to start within {SGLANG_STARTUP_TIMEOUT}s",
+                                model_id=model_id,
                             )
                             done += 1
                     continue
@@ -297,20 +318,21 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                 print(f"[sweep] SGLang ready. Running {len(datasets)} dataset(s)...")
 
                 for dataset in datasets:
-                    if checkpoint.is_done(model_id, batch_size, dataset):
+                    if checkpoint.is_done(slug, batch_size, dataset):
                         print(f"[sweep]   Skipping {dataset} — already done")
                         done += 1
                         continue
 
-                    config_file = f"configs/{dataset}_{slug}.yaml"
+                    config_file = f"configs/{dataset}_{config_slug}.yaml"
                     output_dir = f"{RESULTS_DIR}/{slug}/bs{batch_size}/{dataset}/"
 
                     # Check per-dataset max_batch_size limit
                     max_bs = _get_max_batch_size(config_file)
                     if max_bs is not None and batch_size > max_bs:
                         print(f"[sweep]   Skipping {dataset} — bs={batch_size} exceeds max_batch_size={max_bs}")
-                        checkpoint.mark(model_id, batch_size, dataset, "skipped",
-                                        f"batch_size {batch_size} > max_batch_size {max_bs}")
+                        checkpoint.mark(slug, batch_size, dataset, "skipped",
+                                        f"batch_size {batch_size} > max_batch_size {max_bs}",
+                                        model_id=model_id)
                         done += 1
                         continue
 
@@ -318,12 +340,13 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                     rc = run_benchmark(config_file, batch_size, output_dir, port)
 
                     if rc == 0:
-                        checkpoint.mark(model_id, batch_size, dataset, "success")
+                        checkpoint.mark(slug, batch_size, dataset, "success", model_id=model_id)
                         print(f"[sweep]   ✓ {dataset}")
                     else:
                         checkpoint.mark(
-                            model_id, batch_size, dataset, "failed",
+                            slug, batch_size, dataset, "failed",
                             f"Runner exited with code {rc}",
+                            model_id=model_id,
                         )
                         print(f"[sweep]   ✗ {dataset} (exit code {rc})")
                     done += 1

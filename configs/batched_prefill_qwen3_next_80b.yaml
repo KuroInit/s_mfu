@@ -1,0 +1,15 @@
+# Batched prefill: short 1K input × N concurrent requests packed into one
+# scheduling step. Tests REAL batched-prefill efficiency vs Run 2 which only
+# measured single-prefill efficiency. Up to bs=32 fits in the 32K chunk cap;
+# bs=64/128 partially batched (multiple chunks).
+dataset_names: ["longbench_v2"]
+metrics: []
+model_id: Qwen/Qwen3-Next-80B-A3B-Instruct
+precision: bfloat16
+dataset_split: train
+num_samples: 200
+
+fixed_length_mode: true
+target_input_tokens: 1024
+target_output_tokens: 1
+prefill_mode: batched

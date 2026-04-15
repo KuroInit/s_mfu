@@ -372,3 +372,120 @@ def test_plot_single_metric_tflops_no_data(tmp_path):
     plot_single_metric("empty", {}, "Prefill TFLOPS",
                        "prefill_raw_tflops", out)
     assert not out.exists()
+
+
+# ── aggregate_by_dataset ──────────────────────────────────────────────────────
+
+def test_aggregate_by_dataset_groups_by_dataset_then_slug_then_bs():
+    from analyze import aggregate_by_dataset
+    raw = [
+        ("model_a", 1,  "longbench_v2", {"prefill_smfu": 30.0}),
+        ("model_a", 32, "longbench_v2", {"prefill_smfu": 40.0}),
+        ("model_b", 1,  "longbench_v2", {"prefill_smfu": 20.0}),
+        ("model_a", 1,  "longbench_v2_maxctx", {"prefill_smfu": 55.0}),
+    ]
+    agg = aggregate_by_dataset(raw)
+    assert set(agg.keys()) == {"longbench_v2", "longbench_v2_maxctx"}
+    assert agg["longbench_v2"]["model_a"][1]["prefill_smfu"] == pytest.approx(30.0)
+    assert agg["longbench_v2"]["model_a"][32]["prefill_smfu"] == pytest.approx(40.0)
+    assert agg["longbench_v2"]["model_b"][1]["prefill_smfu"] == pytest.approx(20.0)
+    assert agg["longbench_v2_maxctx"]["model_a"][1]["prefill_smfu"] == pytest.approx(55.0)
+
+def test_aggregate_by_dataset_averages_duplicate_cells():
+    """Same (slug, bs, dataset) repeated: values must be averaged, not overwritten."""
+    from analyze import aggregate_by_dataset
+    raw = [
+        ("model_a", 1, "longbench_v2", {"prefill_smfu": 40.0}),
+        ("model_a", 1, "longbench_v2", {"prefill_smfu": 60.0}),
+    ]
+    agg = aggregate_by_dataset(raw)
+    assert agg["longbench_v2"]["model_a"][1]["prefill_smfu"] == pytest.approx(50.0)
+
+
+# ── plot_metric_per_dataset ───────────────────────────────────────────────────
+
+def test_plot_metric_per_dataset_saves_file(tmp_path):
+    from analyze import plot_metric_per_dataset
+    per_slug = {
+        "model_a": {1: {"prefill_smfu": 10.0}, 32: {"prefill_smfu": 40.0}},
+        "model_b": {1: {"prefill_smfu": 20.0}, 32: {"prefill_smfu": 50.0}},
+    }
+    out = tmp_path / "smfu_longbench_v2.png"
+    plot_metric_per_dataset("longbench_v2", per_slug, "Prefill S-MFU (%)",
+                            "prefill_smfu", out)
+    assert out.exists()
+
+def test_plot_metric_per_dataset_no_models_does_nothing(tmp_path):
+    from analyze import plot_metric_per_dataset
+    out = tmp_path / "smfu_empty.png"
+    plot_metric_per_dataset("empty", {}, "Prefill S-MFU (%)",
+                            "prefill_smfu", out)
+    assert not out.exists()
+
+def test_plot_metric_per_dataset_with_legacy_line(tmp_path):
+    from analyze import plot_metric_per_dataset
+    per_slug = {
+        "qwen3_next_80b": {
+            64:  {"prefill_smfu": 14.9, "prefill_smfu_legacy": 14.9},
+            128: {"prefill_smfu": 15.1, "prefill_smfu_legacy": 15.1},
+        },
+    }
+    out = tmp_path / "smfu_longbench_v2.png"
+    plot_metric_per_dataset("longbench_v2", per_slug, "Prefill S-MFU (%)",
+                            "prefill_smfu", out, legacy_key="prefill_smfu_legacy")
+    assert out.exists()
+
+
+# ── write_raw_values ──────────────────────────────────────────────────────────
+
+def test_write_raw_values_emits_every_cell(tmp_path):
+    from analyze import write_raw_values
+    raw = [
+        ("model_a", 1, "longbench_v2", {"prefill_smfu": 30.0,
+                                         "prefill_smbu": 1.2,
+                                         "prefill_raw_tflops": 300.0}),
+        ("model_b", 1, "longbench_v2", {"prefill_smfu": 20.0,
+                                         "prefill_smbu": 1.1,
+                                         "prefill_raw_tflops": 200.0}),
+        ("model_a", 1, "longbench_v2_maxctx", {"prefill_smfu": 55.0,
+                                                 "prefill_smbu": 2.0,
+                                                 "prefill_raw_tflops": 550.0}),
+    ]
+    out = tmp_path / "raw_values.txt"
+    write_raw_values(raw, out)
+    content = out.read_text()
+    assert "longbench_v2" in content
+    assert "longbench_v2_maxctx" in content
+    assert "model_a" in content
+    assert "model_b" in content
+    # Numerical values present
+    assert "30.00" in content
+    assert "55.00" in content
+
+def test_write_raw_values_includes_legacy_columns_when_present(tmp_path):
+    from analyze import write_raw_values
+    raw = [
+        ("qwen3_next_80b", 64, "longbench_v2",
+         {"prefill_smfu": 14.9, "prefill_smbu": 6.6,
+          "prefill_raw_tflops": 295.4,
+          "prefill_smfu_legacy": 14.9, "prefill_smbu_legacy": 6.6,
+          "prefill_raw_tflops_legacy": 295.4}),
+    ]
+    out = tmp_path / "raw_values.txt"
+    write_raw_values(raw, out)
+    content = out.read_text()
+    assert "prefill_smfu_legacy" in content
+    assert "prefill_raw_tflops_legacy" in content
+
+def test_write_raw_values_skips_absent_legacy_columns(tmp_path):
+    """Non-Qwen3-Next rows have no legacy keys — the column header should not appear."""
+    from analyze import write_raw_values
+    raw = [
+        ("qwen1_5_moe", 1, "longbench_v2",
+         {"prefill_smfu": 30.0, "prefill_smbu": 1.2,
+          "prefill_raw_tflops": 300.0}),
+    ]
+    out = tmp_path / "raw_values.txt"
+    write_raw_values(raw, out)
+    content = out.read_text()
+    assert "prefill_smfu_legacy" not in content

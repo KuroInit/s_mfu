@@ -244,6 +244,123 @@ def plot_single_metric(slug: str, bs_data: dict, metric_label: str,
     print(f"Saved {out_path}")
 
 
+def aggregate_by_dataset(raw: list) -> dict:
+    """Group metrics by dataset and model for per-dataset plotting.
+
+    Args:
+        raw: list of (slug, batch_size, dataset, metrics_dict) tuples.
+             Duplicate (slug, bs, dataset) entries are averaged.
+
+    Returns:
+        {dataset: {slug: {batch_size: {metric_key: value}}}}
+    """
+    accum: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
+    for slug, bs, dataset, metrics in raw:
+        for k, v in metrics.items():
+            accum[dataset][slug][bs][k].append(v)
+
+    result: dict = {}
+    for dataset, slug_data in accum.items():
+        result[dataset] = {}
+        for slug, bs_data in slug_data.items():
+            result[dataset][slug] = {}
+            for bs, kdata in bs_data.items():
+                result[dataset][slug][bs] = {k: sum(v) / len(v) for k, v in kdata.items()}
+    return result
+
+
+def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
+                            metric_label: str, metric_key: str, out_path: Path,
+                            legacy_key: str = None) -> None:
+    """Plot one metric vs batch size for every model, on a single figure.
+
+    Args:
+        per_slug_bs_data: {slug: {bs: {metric_key: value}}}
+    """
+    slugs = sorted(per_slug_bs_data.keys())
+    if not slugs:
+        return
+
+    all_bs = sorted({bs for bs_data in per_slug_bs_data.values() for bs in bs_data.keys()})
+    if not all_bs:
+        return
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    for i, slug in enumerate(slugs):
+        bs_data = per_slug_bs_data[slug]
+        bss = sorted(bs_data.keys())
+        vals = [bs_data[bs].get(metric_key, 0) for bs in bss]
+        color = color_cycle[i % len(color_cycle)]
+        ax.plot(bss, vals, "o-", color=color, label=slug)
+
+        if legacy_key and any(legacy_key in bs_data[bs] for bs in bss):
+            leg_vals = [bs_data[bs].get(legacy_key, 0) for bs in bss]
+            ax.plot(bss, leg_vals, "o:", color=color, alpha=0.4,
+                    label=f"{slug} (legacy)")
+
+    ax.set_xscale("log")
+    ax.set_xticks(all_bs)
+    ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax.set_xlabel("Batch Size")
+    ax.set_ylabel(metric_label)
+    ax.set_title(f"{dataset} — {metric_label}")
+    ax.legend(loc="best", fontsize="small")
+
+    if "%" in metric_label:
+        ax.set_ylim(0, 100)
+    else:
+        ax.set_ylim(bottom=0)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+    if matplotlib.get_backend() != "Agg":
+        plt.show()
+
+    print(f"Saved {out_path}")
+
+
+def write_raw_values(raw: list, out_path: Path) -> None:
+    """Write a plaintext dump of every computed metric grouped by dataset.
+
+    Args:
+        raw: list of (slug, batch_size, dataset, metrics_dict) tuples.
+    """
+    by_dataset: dict = defaultdict(list)
+    for slug, bs, dataset, metrics in raw:
+        by_dataset[dataset].append((slug, bs, metrics))
+
+    metric_order = [
+        "prefill_smfu", "prefill_smbu", "prefill_raw_tflops",
+        "prefill_smfu_legacy", "prefill_smbu_legacy", "prefill_raw_tflops_legacy",
+    ]
+
+    lines = ["# Raw computed metrics — produced by analyze.py",
+             "# Each section lists every (slug, batch_size) cell for that dataset.",
+             ""]
+    for dataset in sorted(by_dataset.keys()):
+        lines.append(f"=== Dataset: {dataset} ===")
+        rows = sorted(by_dataset[dataset], key=lambda t: (t[0], t[1]))
+        keys_present = [k for k in metric_order
+                        if any(k in m for _, _, m in rows)]
+        header = ["slug", "batch_size"] + keys_present
+        widths = [max(len(str(h)), 14) for h in header]
+        lines.append("  ".join(h.ljust(w) for h, w in zip(header, widths)))
+        for slug, bs, metrics in rows:
+            row = [slug, str(bs)]
+            for k in keys_present:
+                v = metrics.get(k)
+                row.append(f"{v:.2f}" if isinstance(v, (int, float)) else "—")
+            lines.append("  ".join(c.ljust(w) for c, w in zip(row, widths)))
+        lines.append("")
+
+    out_path.write_text("\n".join(lines))
+    print(f"Saved {out_path}")
+
+
 def walk_results(results_dir: Path):
     """Yield (slug, bs_dir_name, dataset, leaf_dir) for every leaf directory.
 
@@ -298,7 +415,7 @@ def main() -> None:
             continue
 
         bs = meta["system_environment"]["batch_size"]
-        raw.append((slug, bs, metrics))
+        raw.append((slug, bs, dataset, metrics))
         print(f"  {slug} bs={bs} {dataset}: "
               f"prefill S-MFU={metrics['prefill_smfu']:.1f}% "
               f"S-MBU={metrics['prefill_smbu']:.1f}% "
@@ -313,28 +430,27 @@ def main() -> None:
         print("No valid results found.", file=sys.stderr)
         sys.exit(1)
 
-    data = aggregate_results(raw)
+    # Raw-value dump first — always emitted, even if plotting fails.
+    write_raw_values(raw, results_dir / "raw_values.txt")
 
-    for slug in sorted(data.keys()):
-        bs_data = data[slug]
-
-        plot_single_metric(
-            slug, bs_data, "Prefill S-MFU (%)",
-            "prefill_smfu",
-            results_dir / f"smfu_{slug}.png",
-            "prefill_smfu_legacy",
+    # One figure per (dataset, metric) with every model drawn as a line.
+    per_dataset = aggregate_by_dataset(raw)
+    for dataset in sorted(per_dataset.keys()):
+        per_slug = per_dataset[dataset]
+        plot_metric_per_dataset(
+            dataset, per_slug, "Prefill S-MFU (%)", "prefill_smfu",
+            results_dir / f"smfu_{dataset}.png",
+            legacy_key="prefill_smfu_legacy",
         )
-        plot_single_metric(
-            slug, bs_data, "Prefill S-MBU (%)",
-            "prefill_smbu",
-            results_dir / f"smbu_{slug}.png",
-            "prefill_smbu_legacy",
+        plot_metric_per_dataset(
+            dataset, per_slug, "Prefill S-MBU (%)", "prefill_smbu",
+            results_dir / f"smbu_{dataset}.png",
+            legacy_key="prefill_smbu_legacy",
         )
-        plot_single_metric(
-            slug, bs_data, "Prefill TFLOPS",
-            "prefill_raw_tflops",
-            results_dir / f"raw_flops_{slug}.png",
-            "prefill_raw_tflops_legacy",
+        plot_metric_per_dataset(
+            dataset, per_slug, "Prefill TFLOPS", "prefill_raw_tflops",
+            results_dir / f"raw_flops_{dataset}.png",
+            legacy_key="prefill_raw_tflops_legacy",
         )
 
 

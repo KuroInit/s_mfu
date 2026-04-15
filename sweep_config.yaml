@@ -1,12 +1,15 @@
-# Run 3 sweep configuration.
-# Axis 1 (real batched prefill): added "batched_prefill" dataset (1K × bs concurrent
-#   prefills packed into one scheduling step).
-# Axis 2 (resolution):
-#   - Dense log batch sizes [1,2,4,8,16,32,64,128] reveal the saturation knee.
-#   - tp variants for models that fit on 1 GPU: tp=1 AND tp=2 to quantify TP overhead.
-#     (qwen3_next_80b is tp=2 only — doesn't fit on 1 GPU.)
-batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128]
-datasets: [longbench_v2, longbench_v2_maxctx, prefill, batched_prefill]
+# Run 3 sweep configuration (revised 2026-04-15).
+# Scope reduced after Run 3 partial analysis:
+#   - DeepSeek-V2-Lite dropped (MLA FLOPS upstream bug masks results, see
+#     Audit Findings #15).
+#   - Datasets reduced to longbench_v2 + longbench_v2_maxctx only (drop `prefill`
+#     which duplicates maxctx, and drop `batched_prefill` per Findings #21/#22
+#     where carryover + scheduler under-fill contaminate the metric).
+#   - Batch sizes capped at 32 (higher batches fragmented the chunk window).
+# Axis 2 (TP variants) retained: tp=1 AND tp=2 for every model that fits on a
+# single H100 NVL. qwen3_next_80b remains tp=2 only.
+batch_sizes: [1, 2, 4, 8, 16, 32]
+datasets: [longbench_v2, longbench_v2_maxctx]
 port: 30000
 
 models:
@@ -18,15 +21,6 @@ models:
     tp: 2
     slug: qwen1_5_moe_tp2
     config_slug: qwen1_5_moe
-
-  - id: deepseek-ai/DeepSeek-V2-Lite-Chat
-    tp: 1
-    slug: deepseek_v2_lite
-
-  - id: deepseek-ai/DeepSeek-V2-Lite-Chat
-    tp: 2
-    slug: deepseek_v2_lite_tp2
-    config_slug: deepseek_v2_lite
 
   - id: Qwen/Qwen3-30B-A3B
     tp: 1

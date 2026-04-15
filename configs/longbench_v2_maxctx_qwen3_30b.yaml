@@ -1,6 +1,12 @@
-# LongBench v2: 75% max context window test.
-# Qwen3-30B: 40K max context, 75% = 30K. KV=48KB/tok, 60GB weights.
-# At 30K tokens: bs=1 → ~63GB, bs=16 → ~85GB. Max safe bs=16.
+# LongBench v2: max-context slice for Qwen3-30B.
+# Reduced from 30,720 → 16,384 on 2026-04-16 after Run 3 launch regression:
+# at 30K the chunked-prefill activation workspace on the 94 GB H100 NVL leaves
+# ~0 GB for KV cache (SGLang auto-set mem_fraction_static=0.506, startup OOM).
+# 16K keeps this dataset meaningfully larger than longbench_v2 (4K) without
+# oversubscribing memory. Qwen1.5-MoE remains at 24K and Qwen3-Next-80B at 8K,
+# so cross-model maxctx numbers are no longer at the same context length —
+# interpret within-model only.
+# 60GB weights + 16K×KV at bs=16 comfortably fits.
 dataset_names: ["longbench_v2"]
 metrics: ["em"]
 model_id: Qwen/Qwen3-30B-A3B
@@ -9,6 +15,6 @@ dataset_split: train
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 30720
+target_input_tokens: 16384
 target_output_tokens: 1
 max_batch_size: 16

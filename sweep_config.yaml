@@ -1,13 +1,15 @@
 # Run 3 sweep configuration (revised 2026-04-15).
-# Scope reduced after Run 3 partial analysis:
+# Scope:
 #   - DeepSeek-V2-Lite dropped (MLA FLOPS upstream bug masks results, see
 #     Audit Findings #15).
 #   - Datasets reduced to longbench_v2 + longbench_v2_maxctx only (drop `prefill`
 #     which duplicates maxctx, and drop `batched_prefill` per Findings #21/#22
 #     where carryover + scheduler under-fill contaminate the metric).
 #   - Batch sizes capped at 32 (higher batches fragmented the chunk window).
-# Axis 2 (TP variants) retained: tp=1 AND tp=2 for every model that fits on a
-# single H100 NVL. qwen3_next_80b remains tp=2 only.
+#   - TP chosen by necessity only: tp=1 unless the model won't fit on one
+#     H100 NVL (94 GB). Only qwen3_next_80b needs tp=2. Previous tp=1 vs tp=2
+#     comparison dropped — overhead was ~1–4 pp on qwen1_5_moe (see Experiment
+#     Results "TP=1 vs TP=2" Run 3 partial), not a research axis for Run 3.
 batch_sizes: [1, 2, 4, 8, 16, 32]
 datasets: [longbench_v2, longbench_v2_maxctx]
 port: 30000
@@ -17,19 +19,9 @@ models:
     tp: 1
     slug: qwen1_5_moe
 
-  - id: Qwen/Qwen1.5-MoE-A2.7B-Chat
-    tp: 2
-    slug: qwen1_5_moe_tp2
-    config_slug: qwen1_5_moe
-
   - id: Qwen/Qwen3-30B-A3B
     tp: 1
     slug: qwen3_30b
-
-  - id: Qwen/Qwen3-30B-A3B
-    tp: 2
-    slug: qwen3_30b_tp2
-    config_slug: qwen3_30b
 
   - id: Qwen/Qwen3-Next-80B-A3B-Instruct
     tp: 2

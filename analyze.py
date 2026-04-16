@@ -21,6 +21,13 @@ from moe_cap.model_loader import HFModelInfoRetriever
 from moe_cap.utils.continuous_batching_utils import _calculate_continuous_metrics
 from moe_cap.utils.hardware_utils import get_peak_flops
 
+from sglang_metrics import (
+    load_snapshots,
+    server_tokens_per_sec,
+    peak_running_reqs,
+    peak_cache_hit_rate,
+)
+
 
 def find_latest_file(directory: Path, pattern: str) -> Optional[Path]:
     """Return the Path matching pattern with the latest name (lexicographic), or None."""
@@ -120,13 +127,76 @@ def _run_metrics(records, model_name, precision_str, num_gpus, gpu_raw_type, cap
         return None
 
 
-def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
-    """Recompute S_MFU/S_MBU from per-step records using MoE-CAP internals.
+def _aggregate_raw_throughput(records: list) -> dict:
+    """Sum tokens and time across prefill records. First-order primitives.
 
-    Returns dict with prefill_smfu, decoding_smfu, prefill_smbu, decoding_smbu,
-    prefill_raw_tflops, decoding_raw_tflops (all S-M* in percent 0-100).
-    For Qwen3-Next models, also includes *_legacy keys for comparison.
-    Returns None on failure.
+    Returns {total_tokens, total_latency, tokens_per_sec}, or zeros if empty.
+    This is *raw* in the strict sense — only division of two measured quantities.
+    """
+    total_tokens = sum(r.get("seq_lens_sum", 0) for r in records)
+    total_latency = sum(r.get("latency", 0) for r in records)
+    tps = (total_tokens / total_latency) if total_latency > 0 else 0
+    return {
+        "total_tokens":  total_tokens,
+        "total_latency": total_latency,
+        "tokens_per_sec": tps,
+    }
+
+
+def _merge_tier5(metrics: dict, snaps: list, batch_size: int) -> None:
+    """Augment metrics dict with server-side cross-checks from /metrics snapshots.
+
+    Adds:
+      - server_tokens_per_sec: Δprompt_tokens_total / Δt (monotonic counter).
+      - client_vs_server_delta_pct: relative divergence vs client aggregate.
+      - peak_running_reqs: max num_running_reqs observed.
+      - peak_cache_hit_rate: max cache_hit_rate observed.
+    Emits a warning if the client/server throughputs disagree by >5 %, or if
+    peak_running_reqs exceeds batch_size+1 (serial-wave contract violated),
+    or if cache_hit_rate is materially non-zero (contamination).
+    """
+    if not snaps:
+        return
+    server_tps = server_tokens_per_sec(snaps)
+    peak_run = peak_running_reqs(snaps)
+    peak_cache = peak_cache_hit_rate(snaps)
+    metrics["server_tokens_per_sec"] = server_tps if server_tps is not None else 0
+    metrics["peak_running_reqs"] = peak_run if peak_run is not None else 0
+    metrics["peak_cache_hit_rate"] = peak_cache if peak_cache is not None else 0
+
+    client_tps = metrics.get("prefill_tokens_per_sec", 0)
+    if server_tps and client_tps:
+        delta_pct = abs(client_tps - server_tps) / server_tps * 100
+        metrics["client_vs_server_delta_pct"] = delta_pct
+        if delta_pct > 5:
+            warnings.warn(
+                f"Tier 5: client tok/s={client_tps:.0f} vs server tok/s={server_tps:.0f} "
+                f"— {delta_pct:.1f}% divergence (>5%)"
+            )
+    if peak_run is not None and peak_run > batch_size + 1:
+        warnings.warn(
+            f"Tier 5: peak_running_reqs={peak_run:.0f} > batch_size+1={batch_size+1} — "
+            f"serial-wave contract violated (overlap still present)"
+        )
+    if peak_cache is not None and peak_cache > 0.05:
+        warnings.warn(
+            f"Tier 5: peak_cache_hit_rate={peak_cache:.3f} — prefix-cache contamination"
+        )
+
+
+def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
+    """Compute prefill throughput (raw) and S-MFU/S-MBU (derived).
+
+    Raw primitives come first:
+      - prefill_tokens_per_sec = Σ seq_lens_sum / Σ latency
+    MoE-CAP's S-MFU/S-MBU are kept as derivations over those same primitives
+    (internally they compute per-record prefill_tp then average — which is
+    mathematically weaker than our aggregate, but retained because the paper
+    defines them that way). raw_tflops is reported as the achieved compute rate
+    reconstructed from S-MFU × peak_dense_per_gpu × num_gpus; with Tier-1 fixes
+    on the remote MoE-CAP, this equals (F_token · tokens) / latency directly.
+
+    Returns None on failure; all S-M* are in percent 0-100.
     """
     if not records:
         return None
@@ -144,24 +214,28 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         precision=precision_str,
     )
 
-    # Primary computation (uses correct dispatch for all models including Qwen3-Next)
+    raw = _aggregate_raw_throughput(records)
+
     result = _run_metrics(records, model_name, precision_str, num_gpus, gpu_raw_type, cap_config)
     if not result:
         return None
 
-    # Compute raw TFLOPS
     try:
         peak_flops_raw = get_peak_flops(gpu_raw_type, precision_str)
-        peak_tflops = peak_flops_raw / 1e12
+        peak_tflops_sparse = peak_flops_raw / 1e12  # 2:4 sparse (e.g. H100 HBM3 = 1979)
     except KeyError:
-        peak_tflops = 0
+        peak_tflops_sparse = 0
+    peak_tflops_dense = peak_tflops_sparse / 2
 
     prefill_smfu_frac = result.get("prefill_smfu", 0)
 
     metrics = {
-        "prefill_smfu":        prefill_smfu_frac * 100,
-        "prefill_smbu":        result.get("prefill_smbu", 0) * 100,
-        "prefill_raw_tflops":  prefill_smfu_frac * num_gpus * peak_tflops / 2,
+        "prefill_tokens_per_sec": raw["tokens_per_sec"],
+        "prefill_total_tokens":   raw["total_tokens"],
+        "prefill_total_latency":  raw["total_latency"],
+        "prefill_raw_tflops":     prefill_smfu_frac * num_gpus * peak_tflops_dense,
+        "prefill_smfu":           prefill_smfu_frac * 100,
+        "prefill_smbu":           result.get("prefill_smbu", 0) * 100,
     }
 
     # For Qwen3-Next: also compute with legacy Qwen3 path for comparison
@@ -170,9 +244,9 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         legacy_result = _run_metrics(records, legacy_name, precision_str, num_gpus, gpu_raw_type, cap_config)
         if legacy_result:
             leg_prefill = legacy_result.get("prefill_smfu", 0)
-            metrics["prefill_smfu_legacy"] = leg_prefill * 100
-            metrics["prefill_smbu_legacy"] = legacy_result.get("prefill_smbu", 0) * 100
-            metrics["prefill_raw_tflops_legacy"] = leg_prefill * num_gpus * peak_tflops / 2
+            metrics["prefill_raw_tflops_legacy"] = leg_prefill * num_gpus * peak_tflops_dense
+            metrics["prefill_smfu_legacy"]       = leg_prefill * 100
+            metrics["prefill_smbu_legacy"]       = legacy_result.get("prefill_smbu", 0) * 100
 
     return metrics
 
@@ -334,8 +408,15 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         by_dataset[dataset].append((slug, bs, metrics))
 
     metric_order = [
-        "prefill_smfu", "prefill_smbu", "prefill_raw_tflops",
-        "prefill_smfu_legacy", "prefill_smbu_legacy", "prefill_raw_tflops_legacy",
+        # Raw (first-order) — measured directly from records
+        "prefill_total_tokens", "prefill_total_latency", "prefill_tokens_per_sec",
+        # Derived
+        "prefill_raw_tflops", "prefill_smfu", "prefill_smbu",
+        # Tier 5 server-side cross-check (/metrics counters)
+        "server_tokens_per_sec", "client_vs_server_delta_pct",
+        "peak_running_reqs", "peak_cache_hit_rate",
+        # Legacy Qwen3-path derivations (Qwen3-Next only)
+        "prefill_raw_tflops_legacy", "prefill_smfu_legacy", "prefill_smbu_legacy",
     ]
 
     lines = ["# Raw computed metrics — produced by analyze.py",
@@ -415,16 +496,24 @@ def main() -> None:
             continue
 
         bs = meta["system_environment"]["batch_size"]
+        # Tier 5: cross-check with server-side /metrics counters. Snapshot file
+        # lives two levels above the <org>/<model> leaf (under the dataset dir).
+        dataset_dir = leaf_dir.parent.parent
+        snap_path = dataset_dir / f"sglang_metrics_bs{bs}.jsonl"
+        snaps = load_snapshots(str(snap_path))
+        _merge_tier5(metrics, snaps, bs)
+
         raw.append((slug, bs, dataset, metrics))
         print(f"  {slug} bs={bs} {dataset}: "
-              f"prefill S-MFU={metrics['prefill_smfu']:.1f}% "
-              f"S-MBU={metrics['prefill_smbu']:.1f}% "
-              f"TFLOPS={metrics['prefill_raw_tflops']:.1f}")
+              f"tok/s={metrics['prefill_tokens_per_sec']:.0f} "
+              f"TFLOPS={metrics['prefill_raw_tflops']:.1f} "
+              f"S-MFU={metrics['prefill_smfu']:.1f}% "
+              f"S-MBU={metrics['prefill_smbu']:.1f}%")
         if "prefill_smfu_legacy" in metrics:
             print(f"    legacy: "
+                  f"TFLOPS={metrics['prefill_raw_tflops_legacy']:.1f} "
                   f"S-MFU={metrics['prefill_smfu_legacy']:.1f}% "
-                  f"S-MBU={metrics['prefill_smbu_legacy']:.1f}% "
-                  f"TFLOPS={metrics['prefill_raw_tflops_legacy']:.1f}")
+                  f"S-MBU={metrics['prefill_smbu_legacy']:.1f}%")
 
     if not raw:
         print("No valid results found.", file=sys.stderr)
@@ -451,6 +540,10 @@ def main() -> None:
             dataset, per_slug, "Prefill TFLOPS", "prefill_raw_tflops",
             results_dir / f"raw_flops_{dataset}.png",
             legacy_key="prefill_raw_tflops_legacy",
+        )
+        plot_metric_per_dataset(
+            dataset, per_slug, "Prefill tokens/sec", "prefill_tokens_per_sec",
+            results_dir / f"tokens_per_sec_{dataset}.png",
         )
 
 

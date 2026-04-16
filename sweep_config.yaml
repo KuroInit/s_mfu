@@ -14,15 +14,23 @@ batch_sizes: [1, 2, 4, 8, 16, 32]
 datasets: [longbench_v2, longbench_v2_maxctx]
 port: 30000
 
+# chunk_size_cap (optional): hard cap on --chunked-prefill-size passed to SGLang.
+# Used when the default 32K global cap is either too tight (smaller models with
+# plenty of headroom can chunk larger) or too loose (qwen3_next_80b: weight
+# footprint 74 GB/GPU leaves ~17 GB free; 32K chunk forced KV pool to zero).
+# Lower this on the 80B to claw back KV room if you want to try longer contexts.
 models:
   - id: Qwen/Qwen1.5-MoE-A2.7B-Chat
     tp: 1
     slug: qwen1_5_moe
+    chunk_size_cap: 32768
 
   - id: Qwen/Qwen3-30B-A3B
     tp: 1
     slug: qwen3_30b
+    chunk_size_cap: 32768
 
   - id: Qwen/Qwen3-Next-80B-A3B-Instruct
     tp: 2
     slug: qwen3_next_80b
+    chunk_size_cap: 16384

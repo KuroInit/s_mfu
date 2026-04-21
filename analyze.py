@@ -397,6 +397,46 @@ def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
     print(f"Saved {out_path}")
 
 
+def plot_legacy_comparison(slug: str, dataset: str, bs_data: dict,
+                           metric_label: str, current_key: str, legacy_key: str,
+                           out_path: Path) -> None:
+    """Plot current vs legacy calculation for a single model on one figure.
+
+    Both lines solid (unlike the dotted legacy backdrop on combined plots) so
+    the two paths can be compared directly.
+    """
+    batch_sizes = sorted(bs_data.keys())
+    if not batch_sizes:
+        return
+    if not any(legacy_key in bs_data[bs] for bs in batch_sizes):
+        return
+
+    current_vals = [bs_data[bs].get(current_key, 0) for bs in batch_sizes]
+    legacy_vals = [bs_data[bs].get(legacy_key, 0) for bs in batch_sizes]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(batch_sizes, current_vals, "o-", color="tab:blue", label="Current (Qwen3-Next path)")
+    ax.plot(batch_sizes, legacy_vals, "s-", color="tab:orange", label="Legacy (Qwen3 path)")
+
+    ax.set_xscale("log")
+    ax.set_xticks(batch_sizes)
+    ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax.set_xlabel("Batch Size")
+    ax.set_ylabel(metric_label)
+    ax.set_title(f"{slug} — {metric_label} — {dataset}")
+    ax.legend(loc="best")
+
+    if "%" in metric_label:
+        ax.set_ylim(0, 100)
+    else:
+        ax.set_ylim(bottom=0)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
 def write_raw_values(raw: list, out_path: Path) -> None:
     """Write a plaintext dump of every computed metric grouped by dataset.
 
@@ -545,6 +585,26 @@ def main() -> None:
             dataset, per_slug, "Prefill tokens/sec", "prefill_tokens_per_sec",
             results_dir / f"tokens_per_sec_{dataset}.png",
         )
+
+        # Dedicated qwen3_next_80b current-vs-legacy comparison (one fig per metric).
+        qn_slug = "qwen3_next_80b"
+        if qn_slug in per_slug:
+            qn_bs = per_slug[qn_slug]
+            plot_legacy_comparison(
+                qn_slug, dataset, qn_bs, "Prefill S-MFU (%)",
+                "prefill_smfu", "prefill_smfu_legacy",
+                results_dir / f"{qn_slug}_legacy_smfu_{dataset}.png",
+            )
+            plot_legacy_comparison(
+                qn_slug, dataset, qn_bs, "Prefill S-MBU (%)",
+                "prefill_smbu", "prefill_smbu_legacy",
+                results_dir / f"{qn_slug}_legacy_smbu_{dataset}.png",
+            )
+            plot_legacy_comparison(
+                qn_slug, dataset, qn_bs, "Prefill TFLOPS",
+                "prefill_raw_tflops", "prefill_raw_tflops_legacy",
+                results_dir / f"{qn_slug}_legacy_raw_flops_{dataset}.png",
+            )
 
 
 if __name__ == "__main__":

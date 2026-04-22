@@ -117,6 +117,7 @@ def start_sglang(
         "--expert-distribution-recorder-mode", "stat",
         "--tp-size", str(tp),
         "--max-running-requests", str(batch_size),
+        "--enable-metrics",
     ]
     if chunked_prefill_size is not None and chunked_prefill_size > 0:
         cmd += ["--chunked-prefill-size", str(chunked_prefill_size)]

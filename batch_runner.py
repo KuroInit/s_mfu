@@ -206,7 +206,7 @@ def main() -> int:
     )
 
     dataset_name = dataset_names[0]
-    loader = get_loader_for_task(dataset_name, cap_config)
+    loader, _ = get_loader_for_task(dataset_name, cap_config)
     prompts_data = loader.load()
     prompts = [p["prompt"] if isinstance(p, dict) else p for p in prompts_data][:num_samples]
     if not prompts:

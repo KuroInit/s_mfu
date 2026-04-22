@@ -6,7 +6,7 @@ MoE-CAP evaluates sparse Mixture-of-Experts inference along **Cost**, **Accuracy
 
 ## Prerequisites
 
-- NVIDIA GPU(s) — the current sweep targets H100 NVL 94 GB (single-GPU for 30B-class, TP=2 for 80B)
+- NVIDIA GPU(s) — the current sweep targets H100 NVL 94 GB (single-GPU for 30B-class, TP=2 for 80B). See [`BENCHMARK_GUIDE.md`](BENCHMARK_GUIDE.md) for memory planning.
 - A HuggingFace token with access to the models in `sweep_config.yaml`
 - Either Docker with the NVIDIA container toolkit, or a local Python env (see below)
 

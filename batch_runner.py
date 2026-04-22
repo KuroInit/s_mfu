@@ -207,7 +207,7 @@ def main() -> int:
 
     dataset_name = dataset_names[0]
     loader, _ = get_loader_for_task(dataset_name, cap_config)
-    prompts_data = loader.load()
+    prompts_data = loader.get_input()
     prompts = [p["prompt"] if isinstance(p, dict) else p for p in prompts_data][:num_samples]
     if not prompts:
         print("[batch_runner] ERROR: loader returned no prompts", file=sys.stderr)

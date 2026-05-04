@@ -5,11 +5,15 @@
 batch_sizes: [8, 32, 128]
 datasets: [longbench_v2]
 port: 30000
+gpu_memory_gb: 94
 
 models:
   - id: Qwen/Qwen1.5-MoE-A2.7B-Chat
     tp: 1
     slug: qwen1_5_moe
+    max_context_tokens: 32768
+    weight_gb_per_gpu: 28.6
+    kv_bytes_per_token_per_gpu: 12288
 
   # - id: deepseek-ai/DeepSeek-V2-Lite-Chat
   #   tp: 1

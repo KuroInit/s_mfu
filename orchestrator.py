@@ -9,6 +9,8 @@ import sys
 import time
 import socket
 import subprocess
+from datetime import datetime
+from pathlib import Path
 import yaml
 import requests
 from typing import Optional
@@ -234,6 +236,31 @@ def run_benchmark(
     return result.returncode
 
 
+def persist_moe_cap_server_records(model_id: str, output_dir: str, dataset: str) -> Optional[Path]:
+    """Copy MoE-CAP's full SGLang server records into this result leaf.
+
+    MoE-CAP computes continuous-batching metrics from full server records,
+    including fields such as per_req_info. Its detailed_results export is a
+    reduced view, so the harness preserves the full file for post-processing.
+    """
+    base = os.environ.get(
+        "SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR",
+        os.path.join(RESULTS_DIR, "expert_records"),
+    )
+    src = Path(base) / model_id / "expert_distribution_record.jsonl"
+    if not src.exists():
+        print(f"[runner] WARNING: MoE-CAP server record file not found: {src}")
+        return None
+
+    dest_dir = Path(output_dir) / model_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = dest_dir / f"server_records_{dataset}_{ts}.jsonl"
+    dest.write_text(src.read_text())
+    print(f"[runner] preserved MoE-CAP server records at {dest}")
+    return dest
+
+
 # ─── Config Loading ───────────────────────────────────────────────────────────
 
 def _get_max_batch_size(config_file: str) -> Optional[int]:
@@ -420,6 +447,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                             poller.stop()
 
                     if rc == 0:
+                        persist_moe_cap_server_records(model_id, output_dir, dataset)
                         checkpoint.mark(slug, batch_size, dataset, "success", model_id=model_id)
                         print(f"[sweep]   ✓ {dataset}")
                     else:

@@ -49,13 +49,15 @@ def load_triple(leaf_dir: Path, bs_dir_name: str):
     The metadata dict is enriched with a resolved 'batch_size' key at the top level.
     """
     meta_file = find_latest_file(leaf_dir, "metadata_*.json")
-    records_file = find_latest_file(leaf_dir, "detailed_results_*.jsonl")
+    records_file = find_latest_file(leaf_dir, "server_records_*.jsonl")
+    if records_file is None:
+        records_file = find_latest_file(leaf_dir, "detailed_results_*.jsonl")
 
     if meta_file is None:
         warnings.warn(f"No metadata file in {leaf_dir} — skipping")
         return None, None
     if records_file is None:
-        warnings.warn(f"No detailed_results file in {leaf_dir} — skipping")
+        warnings.warn(f"No server_records or detailed_results file in {leaf_dir} — skipping")
         return None, None
 
     with open(meta_file) as f:
@@ -92,9 +94,15 @@ def normalize_records(records: list) -> list:
     for r in records:
         r2 = dict(r)
         if r.get("forward_mode") == "prefill":
-            r2["latency"] = r.get("ttft") if r.get("ttft") is not None else r.get("tpot", 0)
+            if r.get("ttft") is not None:
+                r2["latency"] = r.get("ttft")
+            else:
+                r2["latency"] = r.get("latency", r.get("tpot", 0))
         else:
-            r2["latency"] = r.get("tpot") if r.get("tpot") is not None else r.get("ttft", 0)
+            if r.get("tpot") is not None:
+                r2["latency"] = r.get("tpot")
+            else:
+                r2["latency"] = r.get("latency", r.get("ttft", 0))
         normalized.append(r2)
     return normalized
 

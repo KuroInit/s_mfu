@@ -46,6 +46,18 @@ def test_load_triple_reads_metadata_and_records(tmp_path):
     assert meta["system_environment"]["batch_size"] == 32
     assert len(records) == 1
 
+def test_load_triple_prefers_full_server_records(tmp_path):
+    from analyze import load_triple
+    _write_metadata(tmp_path / "metadata_gsm8k_20240101_100000.json")
+    _write_jsonl(tmp_path / "detailed_results_gsm8k_20240101_100000.jsonl",
+                 [{"forward_mode": "prefill", "seq_lens_sum": 10, "ttft": 0.1}])
+    _write_jsonl(tmp_path / "server_records_gsm8k_20240101_100000.jsonl",
+                 [{"forward_mode": "prefill", "seq_lens_sum": 100, "latency": 0.2,
+                   "per_req_info": [{"req_id": 1, "extend_len": 100, "is_last_chunk": True}]}])
+    _, records = load_triple(tmp_path, "bs32")
+    assert records[0]["seq_lens_sum"] == 100
+    assert "per_req_info" in records[0]
+
 def test_load_triple_batch_size_fallback_to_dir_name(tmp_path):
     from analyze import load_triple
     (tmp_path / "metadata_gsm8k_20240101_100000.json").write_text(json.dumps({
@@ -98,6 +110,13 @@ def test_normalize_does_not_mutate_originals():
                  "seq_lens_sum": 0, "expert_activation": 0.0}]
     normalize_records(original)
     assert "latency" not in original[0]
+
+def test_normalize_prefill_preserves_native_latency():
+    from analyze import normalize_records
+    records = [{"forward_mode": "prefill", "latency": 0.07,
+                "batch_size": 1, "seq_lens_sum": 100}]
+    result = normalize_records(records)
+    assert result[0]["latency"] == 0.07
 
 # ── compute_smfu_smbu ──────────────────────────────────────────────────────────
 

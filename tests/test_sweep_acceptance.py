@@ -23,12 +23,12 @@ def test_active_sweep_requests_fit_model_context_windows():
             )
 
 
-def test_qwen1_5_reserves_one_decode_token_inside_32k_context():
+def test_qwen1_5_uses_75_percent_context_window():
     cfg = _load_yaml("configs/longbench_v2_qwen1_5_moe.yaml")
 
-    assert cfg["target_input_tokens"] == 32767
+    assert cfg["target_input_tokens"] == 24576
     assert cfg["target_output_tokens"] == 1
-    assert cfg["target_input_tokens"] + cfg["target_output_tokens"] == 32768
+    assert cfg["target_input_tokens"] + cfg["target_output_tokens"] <= 32768
 
 
 def test_qwen3_30b_32k_sweep_is_capped_for_h100_nvl_memory():

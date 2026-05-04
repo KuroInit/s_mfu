@@ -165,8 +165,16 @@ def write_outputs(dest_dir: Path, dataset_name: str, server_records: list,
                 rec["ttft"] = sr.get("latency", 0)
             else:
                 rec["tpot"] = sr.get("latency", 0)
+            if sr.get("per_req_info"):
+                rec["per_req_info"] = sr.get("per_req_info")
             f.write(json.dumps(rec) + "\n")
     print(f"[batch_runner] wrote {det_path}")
+
+    server_path = dest_dir / f"server_records_{dataset_name}_{ts}.jsonl"
+    with server_path.open("w") as f:
+        for sr in server_records:
+            f.write(json.dumps(sr) + "\n")
+    print(f"[batch_runner] wrote {server_path}")
 
 
 def main() -> int:

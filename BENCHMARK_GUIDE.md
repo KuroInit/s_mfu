@@ -100,7 +100,7 @@ Set `MOE_CAP_PROFILING_ONLY=1` to skip the per-forward-pass `ExpertDistributionR
 - `smfu_<dataset>.png` — **S-MFU** is *achieved dense FLOPS / (peak dense FLOPS × num_gpus)*. MoE S-MFU differs from dense MFU because the denominator is the dense-equivalent compute, not the sparse-activated compute.
 - `smbu_<dataset>.png` — **S-MBU** is achieved HBM bandwidth / peak HBM bandwidth. Sensitive to KV size and activation footprint.
 - `raw_flops_<dataset>.png` — achieved prefill TFLOPS (the numerator of S-MFU, before normalisation).
-- `tokens_per_sec_<dataset>.png` — raw throughput: `Σ seq_lens_sum / Σ latency` across prefill records.
+- `tokens_per_sec_<dataset>.png` — MoE-CAP prefill throughput, taken from `_calculate_continuous_metrics()["prefill_tp"]`. `raw_values.txt` also includes `prefill_tokens_per_sec_aggregate`, the harness aggregate cross-check `Σ seq_lens_sum / Σ latency`.
 - `raw_values.txt` — text dump of everything, easier to diff across runs.
 - `qwen3_next_80b_legacy_{metric}_<dataset>.png` — current (Qwen3-Next path) vs legacy (Qwen3 path) for the 80B model only, since the two architectures share enough that the legacy math is a useful sanity line.
 

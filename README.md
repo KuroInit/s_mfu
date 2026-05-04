@@ -132,12 +132,12 @@ $RESULTS_DIR/
 python analyze.py $RESULTS_DIR
 ```
 
-Loads every leaf directory, re-derives per-prefill S-MFU / S-MBU / raw TFLOPS / tokens-per-sec using `moe_cap.utils.continuous_batching_utils._calculate_continuous_metrics`, and cross-checks against Tier-5 server counters (`prompt_tokens_total`, `num_running_reqs`, `cache_hit_rate`) — warning if client/server throughputs diverge > 5 %, if `peak_running_reqs > batch_size + 1` (serial-wave contract broken), or if the prefix cache shows contamination.
+Loads every leaf directory, re-derives per-prefill S-MFU / S-MBU / tokens-per-sec using `moe_cap.utils.continuous_batching_utils._calculate_continuous_metrics`, reconstructs raw TFLOPS from MoE-CAP S-MFU and MoE-CAP peak FLOPS, and cross-checks against Tier-5 server counters (`prompt_tokens_total`, `num_running_reqs`, `cache_hit_rate`) — warning if client/server throughputs diverge > 5 %, if `peak_running_reqs > batch_size + 1` (serial-wave contract broken), or if the prefix cache shows contamination.
 
 If old result files recorded `"Unknown"` as the record-level GPU type, `analyze.py` falls back to metadata and also accepts `ANALYZE_GPU_TYPE=NVIDIA-H100-NVL-94GB` as an explicit override.
 
 Outputs (to `$RESULTS_DIR/`):
-- `raw_values.txt` — plaintext dump of every computed metric per `(slug, bs, dataset)`.
+- `raw_values.txt` — plaintext dump of every metric per `(slug, bs, dataset)`, including MoE-CAP throughput and the harness aggregate throughput cross-check.
 - `smfu_<dataset>.png`, `smbu_<dataset>.png`, `raw_flops_<dataset>.png`, `tokens_per_sec_<dataset>.png` — one combined figure per dataset with one line per model.
 - `qwen3_next_80b_legacy_{smfu,smbu,raw_flops}_<dataset>.png` — dedicated current-path vs legacy-Qwen3-path comparison for the 80B model.
 

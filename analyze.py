@@ -212,16 +212,12 @@ def _merge_tier5(metrics: dict, snaps: list, batch_size: int) -> None:
 
 
 def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
-    """Compute prefill throughput (raw) and S-MFU/S-MBU (derived).
+    """Compute prefill metrics using MoE-CAP wherever possible.
 
-    Raw primitives come first:
-      - prefill_tokens_per_sec = Σ seq_lens_sum / Σ latency
-    MoE-CAP's S-MFU/S-MBU are kept as derivations over those same primitives
-    (internally they compute per-record prefill_tp then average — which is
-    mathematically weaker than our aggregate, but retained because the paper
-    defines them that way). raw_tflops is reported as the achieved compute rate
-    reconstructed from S-MFU × peak_dense_per_gpu × num_gpus; with Tier-1 fixes
-    on the remote MoE-CAP, this equals (F_token · tokens) / latency directly.
+    MoE-CAP is the ground truth for S-MFU, S-MBU, and prefill throughput
+    (`prefill_tp`). analyze.py keeps aggregate token/time primitives as
+    cross-checks because MoE-CAP does not expose those totals directly.
+    raw_tflops is reconstructed from MoE-CAP S-MFU × MoE-CAP peak dense FLOPS.
 
     Returns None on failure; all S-M* are in percent 0-100.
     """
@@ -254,9 +250,13 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
     peak_tflops_dense = peak_tflops_sparse / 2
 
     prefill_smfu_frac = result.get("prefill_smfu", 0)
+    moe_cap_prefill_tps = result.get("prefill_tp")
+    if moe_cap_prefill_tps is None:
+        moe_cap_prefill_tps = raw["tokens_per_sec"]
 
     metrics = {
-        "prefill_tokens_per_sec": raw["tokens_per_sec"],
+        "prefill_tokens_per_sec": moe_cap_prefill_tps,
+        "prefill_tokens_per_sec_aggregate": raw["tokens_per_sec"],
         "prefill_total_tokens":   raw["total_tokens"],
         "prefill_total_latency":  raw["total_latency"],
         "prefill_raw_tflops":     prefill_smfu_frac * num_gpus * peak_tflops_dense,
@@ -474,8 +474,9 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         by_dataset[dataset].append((slug, bs, metrics))
 
     metric_order = [
-        # Raw (first-order) — measured directly from records
-        "prefill_total_tokens", "prefill_total_latency", "prefill_tokens_per_sec",
+        # MoE-CAP throughput plus analyze.py aggregate cross-checks
+        "prefill_tokens_per_sec", "prefill_tokens_per_sec_aggregate",
+        "prefill_total_tokens", "prefill_total_latency",
         # Derived
         "prefill_raw_tflops", "prefill_smfu", "prefill_smbu",
         # Tier 5 server-side cross-check (/metrics counters)

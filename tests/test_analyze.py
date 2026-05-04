@@ -135,6 +135,7 @@ def test_compute_smfu_smbu_returns_percentages():
     records = _make_records()
     fake_result = {
         "prefill_smfu": 0.42, "prefill_smbu": 0.55,
+        "prefill_tp": 1234.0,
         "decoding_smfu": 0.30, "decoding_smbu": 0.88,
     }
     with patch("analyze.HFModelInfoRetriever", return_value=_mock_retriever()), \
@@ -142,6 +143,8 @@ def test_compute_smfu_smbu_returns_percentages():
         result = compute_smfu_smbu(records, meta)
     assert result["prefill_smfu"] == pytest.approx(42.0)
     assert result["prefill_smbu"] == pytest.approx(55.0)
+    assert result["prefill_tokens_per_sec"] == pytest.approx(1234.0)
+    assert result["prefill_tokens_per_sec_aggregate"] == pytest.approx(0.0)
     assert "decoding_smfu" not in result
     assert "decoding_smbu" not in result
 

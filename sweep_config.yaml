@@ -1,42 +1,24 @@
-# Fixed 32K-prefill sweep configuration.
-# Scope:
-#   - DeepSeek-V2-Lite dropped (MLA FLOPS upstream bug masks results, see
-#     Audit Findings #15).
-#   - One fixed-length LongBench V2 text source: 32K prefill target, 1 output
-#     token. Qwen1.5-MoE uses 32,767 input tokens because its total context
-#     window is exactly 32,768.
-#   - Batch sizes capped at 32 for the current H100 NVL memory envelope.
-#   - TP chosen by necessity only: tp=1 unless the model won't fit on one
-#     H100 NVL (94 GB). Only qwen3_next_80b needs tp=2. Previous tp=1 vs tp=2
-#     comparison dropped — overhead was ~1–4 pp on qwen1_5_moe in prior
-#     experiments, not a research axis for this sweep.
-batch_sizes: [1, 2, 4, 8, 16, 32]
+# Qwen1.5-MoE capacity-collapse test.
+# Based on commit 828a717 ("update to 75% max token window"):
+#   - LongBench v2 fixed-length input uses 75% of Qwen1.5's 32K window.
+#   - Sweep high batch sizes to make roofline movement/collapse visible.
+batch_sizes: [1, 2, 4, 8, 16, 32, 64, 128]
 datasets: [longbench_v2]
 port: 30000
-gpu_memory_gb: 94
 
-# chunked_prefill_size (optional, per model): explicit override for
-# --chunked-prefill-size. Omit it by default so MoE-CAP/SGLang own scheduling.
-# Optional resource metadata is per GPU after tensor parallelism. It is used
-# only for harness preflight checks; MoE-CAP remains the source of metric math.
 models:
   - id: Qwen/Qwen1.5-MoE-A2.7B-Chat
     tp: 1
     slug: qwen1_5_moe
-    max_context_tokens: 32768
-    weight_gb_per_gpu: 28.6
-    kv_bytes_per_token_per_gpu: 196608
 
-  - id: Qwen/Qwen3-30B-A3B
-    tp: 1
-    slug: qwen3_30b
-    max_context_tokens: 40960
-    weight_gb_per_gpu: 60.0
-    kv_bytes_per_token_per_gpu: 98304
+  # - id: deepseek-ai/DeepSeek-V2-Lite-Chat
+  #   tp: 1
+  #   slug: deepseek_v2_lite
 
-  - id: Qwen/Qwen3-Next-80B-A3B-Instruct
-    tp: 2
-    slug: qwen3_next_80b
-    max_context_tokens: 262144
-    weight_gb_per_gpu: 74.3
-    kv_bytes_per_token_per_gpu: 49152
+  # - id: Qwen/Qwen3-30B-A3B
+  #   tp: 1
+  #   slug: qwen3_30b
+
+  # - id: Qwen/Qwen3-Next-80B-A3B-Instruct
+  #   tp: 2
+  #   slug: qwen3_next_80b

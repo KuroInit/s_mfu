@@ -112,9 +112,11 @@ Set `MOE_CAP_PROFILING_ONLY=1` to skip the per-forward-pass `ExpertDistributionR
 ## Tier-5 sanity warnings
 
 `analyze.py` emits warnings when:
-- `|client_tps − server_tps| / server_tps > 5 %` — client-side aggregation disagrees with SGLang's own counters. Usually means dataset records are being dropped or duplicated.
+- `|client_tps − server_tps| / server_tps > 5 %` — client-side aggregation disagrees with SGLang's own counters. Usually means dataset records are being dropped, duplicated, or inflated by cached-prefix hits.
 - `peak_running_reqs > batch_size + 1` — serial-wave contract broken. Either you're using the default runner or the server scheduled more requests than it should.
-- `peak_cache_hit_rate > 0.05` — prefix cache is contaminating runs. Between-triple restart should prevent this; if it triggers, check the SGLang restart loop.
+- `peak_cache_hit_rate > 0.05` — prefix cache is contaminating runs. The orchestrator passes `--disable-radix-cache` by default; if it triggers, verify the server command line and make sure `DISABLE_RADIX_CACHE=0` was not set.
+
+`ANALYZE_GPU_TYPE=NVIDIA-H100-NVL-94GB python analyze.py ...` can be used to analyze older result folders that wrote `"Unknown"` into GPU metadata. This should only fix hardware lookup; it does not make cache-contaminated runs valid.
 
 ## Known findings
 
@@ -132,6 +134,7 @@ Set `MOE_CAP_PROFILING_ONLY=1` to skip the per-forward-pass `ExpertDistributionR
 | `AssertionError: ExpertLocationMetadata is required` | AWQ / unsupported MoE arch for expert recorder | Remove model from sweep, or set `MOE_CAP_PROFILING_ONLY=1` |
 | `KeyError: '<GPU-name>'` in `hardware_utils.py` | New GPU not in dicts | Add entry to `MEM_BW_DICT` and `PEAK_FLOPS_DICT` |
 | `GET /metrics → 404` loop | SGLang launched without `--enable-metrics` | Orchestrator adds it automatically; if debugging manually, pass the flag yourself |
+| `S-MFU > 100%` or huge client/server tok/s divergence | Prefix/radix cache, bad token accounting, or wrong hardware denominator | Treat the run as invalid; re-run with `--disable-radix-cache` and a recognized H100 NVL GPU type |
 | `AttributeError: ... has no attribute 'load'` in batch_runner | Loader API is `get_input()`, not `load()` | Already fixed; ensure you're running the latest `batch_runner.py` |
 | OOM at SGLang startup, `mem_fraction_static` < weight fraction | Weights + KV/workspace exceed GPU | Lower `max_batch_size`, then `target_input_tokens`; use explicit `chunked_prefill_size` only as a scheduling workaround |
 | `analyze.py` reports "No valid results found" | `walk_results` didn't descend into `<org>/<model>` leaves | Already fixed; re-run after pulling latest |

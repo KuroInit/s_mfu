@@ -30,6 +30,11 @@ PORT_FREE_TIMEOUT = 60         # seconds to wait for port to clear
 METRICS_POLL_INTERVAL = 1.0    # seconds; set METRICS_POLL_INTERVAL=0 to disable Tier 5
 
 
+def _disable_radix_cache_enabled() -> bool:
+    """Return whether SGLang's prefix/radix cache should be disabled."""
+    return os.environ.get("DISABLE_RADIX_CACHE", "1").lower() not in {"0", "false", "no"}
+
+
 # ─── Checkpoint ──────────────────────────────────────────────────────────────
 
 class Checkpoint:
@@ -119,6 +124,8 @@ def start_sglang(
         "--max-running-requests", str(batch_size),
         "--enable-metrics",
     ]
+    if _disable_radix_cache_enabled():
+        cmd += ["--disable-radix-cache"]
     if chunked_prefill_size is not None and chunked_prefill_size > 0:
         cmd += ["--chunked-prefill-size", str(chunked_prefill_size)]
     print(f"[sglang] Starting: {' '.join(cmd)}")

@@ -152,6 +152,17 @@ class TestStartSglang:
         assert "64" in cmd
         assert "--expert-distribution-recorder-mode" in cmd
         assert "stat" in cmd
+        assert "--enable-metrics" in cmd
+        assert "--disable-radix-cache" in cmd
+
+    def test_radix_cache_can_be_enabled_for_debugging(self, monkeypatch):
+        monkeypatch.setenv("DISABLE_RADIX_CACHE", "0")
+        from orchestrator import start_sglang
+        with patch("orchestrator.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            start_sglang(model_id="org/model", tp=1, batch_size=1, port=30000)
+        cmd = mock_popen.call_args[0][0]
+        assert "--disable-radix-cache" not in cmd
 
 
 class TestKillSglang:

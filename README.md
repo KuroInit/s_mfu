@@ -82,6 +82,7 @@ models:
 - `tp` is set by necessity only — TP=1 unless the model won't fit on one GPU.
 - `gpu_memory_gb`, `max_context_tokens`, `weight_gb_per_gpu`, and `kv_bytes_per_token_per_gpu` are harness preflight guardrails. They make impossible batch cells fail before SGLang loads weights.
 - Optional `chunked_prefill_size` can be set per model or dataset when an operator needs an explicit SGLang scheduling override. It is omitted by default so MoE-CAP/SGLang own scheduling.
+- SGLang radix/prefix caching is disabled by default with `--disable-radix-cache`; set `DISABLE_RADIX_CACHE=0` only for debugging cached-prefix behavior, not for S-MFU/S-MBU measurements.
 
 **Dropped in this sweep:** DeepSeek-V2-Lite (MLA FLOPS upstream bug), Mixtral-8x22B-AWQ (no `ExpertLocationMetadata`), and duplicate max-context datasets. The active sweep is intentionally one fixed-length LongBench V2 source at a 32K prefill target and 1 output token. Qwen1.5-MoE has a 32,768-token total context window, so its config uses 32,767 input tokens plus 1 decode token; the Qwen3 models use 32,768 input tokens plus 1 decode token.
 
@@ -94,7 +95,7 @@ Each active `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the 
 For each `(slug, batch_size, dataset)` triple not yet marked success in the checkpoint:
 
 1. **Pre-flight** — validates all HF model IDs up front (`orchestrator.py:validate_models`).
-2. **Start SGLang** — launches `moe_cap.systems.sglang` with `--enable-metrics`; polls `/health` until ready (25 min cap). `--chunked-prefill-size` is passed only when explicitly configured.
+2. **Start SGLang** — launches `moe_cap.systems.sglang` with `--enable-metrics` and `--disable-radix-cache`; polls `/health` until ready (25 min cap). `--chunked-prefill-size` is passed only when explicitly configured.
 3. **Start Tier-5 poller** — `sglang_metrics.py` scrapes `/metrics` every `METRICS_POLL_INTERVAL` seconds and writes `sglang_metrics_bs<N>.jsonl` next to the results.
 4. **Run benchmark** — `moe_cap.runner.openai_api_profile` by default, or `batch_runner.py` when `BATCH_RUNNER=strict`.
 5. **Checkpoint** — success or failure written to `$CHECKPOINT_PATH`.
@@ -132,6 +133,8 @@ python analyze.py $RESULTS_DIR
 ```
 
 Loads every leaf directory, re-derives per-prefill S-MFU / S-MBU / raw TFLOPS / tokens-per-sec using `moe_cap.utils.continuous_batching_utils._calculate_continuous_metrics`, and cross-checks against Tier-5 server counters (`prompt_tokens_total`, `num_running_reqs`, `cache_hit_rate`) — warning if client/server throughputs diverge > 5 %, if `peak_running_reqs > batch_size + 1` (serial-wave contract broken), or if the prefix cache shows contamination.
+
+If old result files recorded `"Unknown"` as the record-level GPU type, `analyze.py` falls back to metadata and also accepts `ANALYZE_GPU_TYPE=NVIDIA-H100-NVL-94GB` as an explicit override.
 
 Outputs (to `$RESULTS_DIR/`):
 - `raw_values.txt` — plaintext dump of every computed metric per `(slug, bs, dataset)`.

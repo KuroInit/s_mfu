@@ -159,6 +159,19 @@ def test_compute_smfu_smbu_returns_none_on_empty_records():
         result = compute_smfu_smbu([], _make_meta())
     assert result is None
 
+def test_resolve_gpu_raw_type_falls_back_from_unknown_record():
+    from analyze import resolve_gpu_raw_type
+    records = [{"gpu_raw_type": "Unknown"}]
+    meta = _make_meta(gpu_type="NVIDIA-H100-NVL-94GB")
+    assert resolve_gpu_raw_type(records, meta) == "NVIDIA-H100-NVL-94GB"
+
+def test_resolve_gpu_raw_type_env_override(monkeypatch):
+    from analyze import resolve_gpu_raw_type
+    monkeypatch.setenv("ANALYZE_GPU_TYPE", "NVIDIA-H100-NVL-94GB")
+    records = [{"gpu_raw_type": "Unknown"}]
+    meta = _make_meta(gpu_type="Unknown")
+    assert resolve_gpu_raw_type(records, meta) == "NVIDIA-H100-NVL-94GB"
+
 # ── aggregate_results ─────────────────────────────────────────────────────────
 
 def test_aggregate_single_entry():

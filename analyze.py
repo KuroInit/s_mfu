@@ -28,6 +28,8 @@ from sglang_metrics import (
     peak_cache_hit_rate,
 )
 
+UNKNOWN_GPU_VALUES = {"", "unknown", "none", "null"}
+
 
 def find_latest_file(directory: Path, pattern: str) -> Optional[Path]:
     """Return the Path matching pattern with the latest name (lexicographic), or None."""
@@ -94,6 +96,31 @@ def normalize_records(records: list) -> list:
             r2["latency"] = r.get("tpot") if r.get("tpot") is not None else r.get("ttft", 0)
         normalized.append(r2)
     return normalized
+
+
+def _is_known_gpu_value(value) -> bool:
+    return value is not None and str(value).strip().lower() not in UNKNOWN_GPU_VALUES
+
+
+def resolve_gpu_raw_type(records: list, metadata: dict) -> Optional[str]:
+    """Pick the GPU type used for MoE-CAP hardware lookup.
+
+    Older server results sometimes store "Unknown" in each detailed record even
+    when metadata has the real GPU. ANALYZE_GPU_TYPE is an explicit escape hatch
+    for analyzing such historical runs without editing result files.
+    """
+    candidates = [
+        os.environ.get("ANALYZE_GPU_TYPE"),
+        records[0].get("gpu_raw_type") if records else None,
+        metadata.get("hardware", {}).get("gpu_type"),
+    ]
+    for candidate in candidates:
+        if _is_known_gpu_value(candidate):
+            return str(candidate)
+    for candidate in candidates:
+        if candidate is not None:
+            return str(candidate)
+    return None
 
 
 def _run_metrics(records, model_name, precision_str, num_gpus, gpu_raw_type, cap_config):
@@ -204,8 +231,7 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
     model_name = metadata["model_config"]["model_name"]
     precision_str = metadata["model_config"].get("precision", "bfloat16")
     num_gpus = metadata["hardware"].get("num_gpus", 1)
-    gpu_raw_type = records[0].get("gpu_raw_type",
-                                  metadata["hardware"].get("gpu_type"))
+    gpu_raw_type = resolve_gpu_raw_type(records, metadata)
 
     cap_config = CAPConfig(
         dataset_names=[],

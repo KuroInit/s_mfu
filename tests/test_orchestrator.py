@@ -278,6 +278,34 @@ class TestRunBenchmark:
         assert "--output_dir" in cmd
         assert "/results/qwen3_30b/bs64/gsm8k/" in cmd
 
+    def test_defaults_to_moe_cap_runner(self, monkeypatch):
+        from orchestrator import run_benchmark
+        monkeypatch.delenv("BATCH_RUNNER", raising=False)
+        with patch("orchestrator.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            run_benchmark(
+                config_file="configs/longbench_v2_qwen3_30b.yaml",
+                batch_size=1,
+                output_dir="/results/qwen3_30b/bs1/longbench_v2/",
+                port=30000,
+            )
+        cmd = mock_run.call_args[0][0]
+        assert cmd[1:3] == ["-m", "moe_cap.runner.openai_api_profile"]
+
+    def test_strict_runner_is_opt_in(self, monkeypatch):
+        from orchestrator import run_benchmark
+        monkeypatch.setenv("BATCH_RUNNER", "strict")
+        with patch("orchestrator.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            run_benchmark(
+                config_file="configs/longbench_v2_qwen3_30b.yaml",
+                batch_size=1,
+                output_dir="/results/qwen3_30b/bs1/longbench_v2/",
+                port=30000,
+            )
+        cmd = mock_run.call_args[0][0]
+        assert cmd[1] == "batch_runner.py"
+
 
 # ─── Config Loading Tests ────────────────────────────────────────────────────
 
@@ -406,109 +434,89 @@ class TestRunSweep:
                 with patch("orchestrator.kill_sglang") as mock_kill:
                     with patch("orchestrator.wait_port_free", return_value=True):
                         run_sweep(self._make_config(), ckpt)
-        mock_kill.assert_called_once_with(mock_proc)
+        assert mock_kill.call_args_list == [call(mock_proc), call(mock_proc)]
 
 
-# ─── Chunk Size Logic Tests ─────────────────────────────────────────────────
+# ─── Sweep Config Validation / Explicit SGLang Overrides ─────────────────────
 
-class TestGetRequiredChunkSize:
-    """Verifies _get_required_chunk_size handles single vs batched prefill modes,
-    max_batch_size filtering, and missing config files correctly."""
-
-    def _write_config(self, dir_path, name, target_input_tokens=None,
-                      max_batch_size=None, prefill_mode=None):
-        cfg = {}
-        if target_input_tokens is not None:
-            cfg["target_input_tokens"] = target_input_tokens
-        if max_batch_size is not None:
-            cfg["max_batch_size"] = max_batch_size
-        if prefill_mode is not None:
-            cfg["prefill_mode"] = prefill_mode
+class TestSweepConfigValidation:
+    def _write_config(self, dir_path, name, **overrides):
+        cfg = {
+            "dataset_names": ["longbench_v2"],
+            "metrics": [],
+            "model_id": "org/modelA",
+            "fixed_length_mode": True,
+            "target_input_tokens": 32768,
+            "target_output_tokens": 1,
+        }
+        cfg.update(overrides)
         (dir_path / f"{name}.yaml").write_text(yaml.dump(cfg))
 
-    def test_single_mode_returns_target_input_tokens(self, tmp_path, monkeypatch):
-        from orchestrator import _get_required_chunk_size
+    def _make_sweep(self):
+        return {
+            "batch_sizes": [1],
+            "datasets": ["longbench_v2"],
+            "models": [{"id": "org/modelA", "slug": "model_a", "tp": 1}],
+        }
+
+    def test_validate_sweep_configs_accepts_fixed_length_prefill_config(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
         configs = tmp_path / "configs"
         configs.mkdir()
-        self._write_config(configs, "ds_slug", target_input_tokens=8000)
+        self._write_config(configs, "longbench_v2_model_a")
         monkeypatch.chdir(tmp_path)
-        # Single mode (default) at any bs returns target_input_tokens unchanged
-        assert _get_required_chunk_size("slug", ["ds"], batch_size=1) == 8000
-        assert _get_required_chunk_size("slug", ["ds"], batch_size=64) == 8000
+        validate_sweep_configs(self._make_sweep())
 
-    def test_batched_mode_scales_with_batch_size(self, tmp_path, monkeypatch):
-        from orchestrator import _get_required_chunk_size
+    def test_validate_sweep_configs_fails_when_config_missing(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        (tmp_path / "configs").mkdir()
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(self._make_sweep())
+
+    def test_validate_sweep_configs_requires_one_output_token(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
         configs = tmp_path / "configs"
         configs.mkdir()
-        self._write_config(configs, "ds_slug", target_input_tokens=1024,
-                           prefill_mode="batched")
+        self._write_config(configs, "longbench_v2_model_a", target_output_tokens=2)
         monkeypatch.chdir(tmp_path)
-        assert _get_required_chunk_size("slug", ["ds"], batch_size=1) == 1024
-        assert _get_required_chunk_size("slug", ["ds"], batch_size=8) == 8192
-        assert _get_required_chunk_size("slug", ["ds"], batch_size=32) == 32768
-        assert _get_required_chunk_size("slug", ["ds"], batch_size=128) == 131072
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(self._make_sweep())
 
-    def test_skips_dataset_when_batch_size_exceeds_max(self, tmp_path, monkeypatch):
-        from orchestrator import _get_required_chunk_size
+    def test_validate_sweep_configs_rejects_context_overflow(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
         configs = tmp_path / "configs"
         configs.mkdir()
-        self._write_config(configs, "big_slug", target_input_tokens=120000,
-                           max_batch_size=8)
-        self._write_config(configs, "small_slug", target_input_tokens=4000)
+        self._write_config(configs, "longbench_v2_model_a")
+        sweep = self._make_sweep()
+        sweep["models"][0]["max_context_tokens"] = 32768
         monkeypatch.chdir(tmp_path)
-        # At bs=4 both apply, big wins
-        assert _get_required_chunk_size("slug", ["big", "small"], batch_size=4) == 120000
-        # At bs=32 big is filtered (max_batch_size=8), only small remains
-        assert _get_required_chunk_size("slug", ["big", "small"], batch_size=32) == 4000
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(sweep)
 
-    def test_takes_max_across_datasets_with_mixed_modes(self, tmp_path, monkeypatch):
-        from orchestrator import _get_required_chunk_size
+    def test_validate_sweep_configs_rejects_estimated_oom_batch(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
         configs = tmp_path / "configs"
         configs.mkdir()
-        # single 13K + batched 1K × bs
-        self._write_config(configs, "single_slug", target_input_tokens=13000)
-        self._write_config(configs, "batched_slug", target_input_tokens=1024,
-                           prefill_mode="batched")
+        self._write_config(configs, "longbench_v2_model_a", max_batch_size=16)
+        sweep = self._make_sweep()
+        sweep["batch_sizes"] = [16]
+        sweep["gpu_memory_gb"] = 94
+        sweep["models"][0].update({
+            "weight_gb_per_gpu": 60.0,
+            "kv_bytes_per_token_per_gpu": 98304,
+        })
         monkeypatch.chdir(tmp_path)
-        # bs=8: single=13000, batched=8192 → max=13000
-        assert _get_required_chunk_size("slug", ["single", "batched"], batch_size=8) == 13000
-        # bs=32: single=13000, batched=32768 → max=32768
-        assert _get_required_chunk_size("slug", ["single", "batched"], batch_size=32) == 32768
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(sweep)
 
-    def test_returns_zero_when_no_configs_match(self, tmp_path, monkeypatch):
-        from orchestrator import _get_required_chunk_size
-        configs = tmp_path / "configs"
-        configs.mkdir()
-        monkeypatch.chdir(tmp_path)
-        assert _get_required_chunk_size("slug", ["nonexistent"], batch_size=1) == 0
+    def test_explicit_chunked_prefill_can_be_set_on_model_or_dataset(self):
+        from orchestrator import _get_explicit_chunked_prefill_size
 
-    def test_uses_config_slug_for_lookup(self, tmp_path, monkeypatch):
-        """run_sweep passes config_slug (not slug) so tp variants share configs."""
-        from orchestrator import _get_required_chunk_size
-        configs = tmp_path / "configs"
-        configs.mkdir()
-        self._write_config(configs, "ds_basemodel", target_input_tokens=4096)
-        monkeypatch.chdir(tmp_path)
-        # config_slug="basemodel" finds the config; would-be slug "basemodel_tp2" must not
-        assert _get_required_chunk_size("basemodel", ["ds"], batch_size=1) == 4096
-        assert _get_required_chunk_size("basemodel_tp2", ["ds"], batch_size=1) == 0
-
-
-class TestChunkSizeCap:
-    """Verifies the 32K cap is applied in run_sweep."""
-
-    def test_cap_applied_at_high_batch_size(self, tmp_path, monkeypatch):
-        from orchestrator import _get_required_chunk_size, CHUNK_SIZE_CAP
-        configs = tmp_path / "configs"
-        configs.mkdir()
-        cfg = {"target_input_tokens": 1024, "prefill_mode": "batched"}
-        (configs / "ds_slug.yaml").write_text(yaml.dump(cfg))
-        monkeypatch.chdir(tmp_path)
-        # raw requirement 128K, cap (applied in run_sweep) limits to 32K
-        raw = _get_required_chunk_size("slug", ["ds"], batch_size=128)
-        assert raw == 131072
-        # The cap itself is verified to be 32768
-        assert CHUNK_SIZE_CAP == 32768
-        # Simulate run_sweep capping logic
-        capped = min(raw + 50, CHUNK_SIZE_CAP)
-        assert capped == 32768
+        assert _get_explicit_chunked_prefill_size(
+            {"chunked_prefill_size": 65536}, {}
+        ) == 65536
+        assert _get_explicit_chunked_prefill_size(
+            {"chunked_prefill_size": 65536}, {"chunked_prefill_size": 32768}
+        ) == 32768
+        assert _get_explicit_chunked_prefill_size({}, {}) is None

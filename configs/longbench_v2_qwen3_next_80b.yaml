@@ -1,12 +1,13 @@
-# LongBench v2: real long-context documents, truncated to fit bs=128.
-# Qwen3-Next-80B: 262K context, KV=6KB/tok/GPU (TP=2) → 8K fits at bs=128.
+# Fixed-length prefill benchmark: 32K input tokens, 1 output token.
 dataset_names: ["longbench_v2"]
-metrics: ["em"]
+metrics: []
 model_id: Qwen/Qwen3-Next-80B-A3B-Instruct
 precision: bfloat16
 dataset_split: train
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 8192
+target_input_tokens: 32768
 target_output_tokens: 1
+# Conservative 2x94GB H100 NVL estimate: ~74.3GB weights/GPU + ~1.5GB KV/request/GPU.
+max_batch_size: 8

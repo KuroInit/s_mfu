@@ -1,20 +1,13 @@
-# Qwen3-Next-80B "maxctx" slice — collapsed to 8K on 2026-04-16.
-# Original target was 196,608 tokens (75% of 262K context). Run 3 launch failed
-# at bs=1: weights 74.31 GB/GPU leave only 17.28 GB/GPU free on 94 GB H100 NVL;
-# with chunked-prefill-size=32,768 (CHUNK_SIZE_CAP), SGLang auto-set
-# mem_fraction_static=0.474 (< weight footprint) → KV pool allocation fails.
-# 8K matches the longbench_v2 slice for this model, so for qwen3_next_80b the
-# "maxctx" axis is effectively absent — same 8K prompts, just a second sampling.
-# The within-model long-context axis is retained on qwen1_5_moe (4K/24K) and
-# qwen3_30b (4K/16K). See Audit Findings #24.
+# Fixed-length prefill benchmark: 32K input tokens, 1 output token.
 dataset_names: ["longbench_v2"]
-metrics: ["em"]
+metrics: []
 model_id: Qwen/Qwen3-Next-80B-A3B-Instruct
 precision: bfloat16
 dataset_split: train
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 8192
+target_input_tokens: 32768
 target_output_tokens: 1
-max_batch_size: 32
+# Conservative 2x94GB H100 NVL estimate: ~74.3GB weights/GPU + ~1.5GB KV/request/GPU.
+max_batch_size: 8

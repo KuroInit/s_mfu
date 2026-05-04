@@ -12,15 +12,19 @@ Rough per-GPU budget for prefill:
 free_kv  =  gpu_mem  −  weights/tp  −  activation_workspace(chunked_prefill_size)
 ```
 
-If `free_kv ≤ 0`, SGLang auto-sets `mem_fraction_static < weight_footprint` and KV pool allocation fails at startup. That's what forced the 80B and 30B `maxctx` context shrinks on 2026-04-16:
+If `free_kv ≤ 0`, SGLang auto-sets `mem_fraction_static < weight_footprint` and KV pool allocation fails at startup. The active sweep keeps the input length fixed around 32K and caps each model at `max_batch_size: 8` under a conservative weights + KV estimate for 94GB H100 NVL.
 
-| Model | TP | Weights/GPU | Fits at (input, bs) | Chunk cap |
-|---|---|---|---|---|
-| Qwen1.5-MoE-A2.7B-Chat | 1 | 28.6 GB | 24 K × bs=128 | 32 K |
-| Qwen3-30B-A3B | 1 | ~60 GB | 4 K × bs=128 / 16 K × bs=16 | 32 K |
-| Qwen3-Next-80B-A3B | 2 | 74.3 GB | 8 K × bs=32 | 16 K |
+| Model | TP | Weights/GPU | KV/request/GPU @ 32K | Active target | Max bs |
+|---|---|---|---|---|---|
+| Qwen1.5-MoE-A2.7B-Chat | 1 | 28.6 GB | ~6.0 GiB | 32,767 input, 1 output | 8 |
+| Qwen3-30B-A3B | 1 | ~60 GB | ~3.0 GiB | 32 K input, 1 output | 8 |
+| Qwen3-Next-80B-A3B | 2 | 74.3 GB | ~1.5 GiB | 32 K input, 1 output | 8 |
 
-If a new model OOMs at startup, **halve the chunk cap first** (`chunk_size_cap` in `sweep_config.yaml`), then reduce `target_input_tokens`, then set `max_batch_size` in the dataset config.
+If a new model OOMs at startup, first reduce `max_batch_size`; if even `bs=1` fails, reduce `target_input_tokens`. Set `chunked_prefill_size` only as an explicit SGLang scheduling workaround.
+
+Context-window check: Qwen1.5-MoE has `max_position_embeddings=32768`, so a strict server cannot accept 32,768 input tokens plus 1 generated token. Its active config reserves one token for decode. Qwen3-30B-A3B has `max_position_embeddings=40960`, and Qwen3-Next-80B-A3B-Instruct supports 262,144 tokens, so both can accept 32,768 input tokens plus 1 output token.
+
+OOM preflight check: `sweep_config.yaml` stores optional per-GPU `weight_gb_per_gpu`, `kv_bytes_per_token_per_gpu`, and `max_context_tokens` for the active models. `orchestrator.py` validates active, non-skipped batch cells before starting SGLang. These estimates are guardrails only; MoE-CAP remains the source of S-MFU/S-MBU/FLOPS metric math.
 
 ## Adding a model to the sweep
 
@@ -29,11 +33,11 @@ If a new model OOMs at startup, **halve the chunk cap first** (`chunk_size_cap` 
    - id: org/new-moe-model
      tp: 1
      slug: new_moe
-     chunk_size_cap: 32768
    ```
-2. Create one dataset config per dataset you want to sweep for it (e.g. `configs/longbench_v2_new_moe.yaml` and `configs/longbench_v2_maxctx_new_moe.yaml`). Copy an existing file and adjust `model_id`, `target_input_tokens`, and `max_batch_size`.
-3. Run a dry smoke at the smallest batch size: `batch_sizes: [1]` temporarily — watch SGLang startup log for `mem_fraction_static` and KV pool size.
-4. Restore the full batch list once it fits.
+2. Create one dataset config per dataset you want to sweep for it (e.g. `configs/longbench_v2_new_moe.yaml`). Copy an existing file and adjust `model_id`; keep `target_output_tokens: 1`, and set `target_input_tokens` so `target_input_tokens + target_output_tokens <= max_position_embeddings`.
+3. Add conservative per-GPU resource metadata to the model entry (`max_context_tokens`, `weight_gb_per_gpu`, `kv_bytes_per_token_per_gpu`) or run a one-batch smoke manually and set `max_batch_size` in the dataset config.
+4. Run a dry smoke at the smallest batch size: `batch_sizes: [1]` temporarily — watch SGLang startup log for `mem_fraction_static` and KV pool size.
+5. Restore the full batch list once it fits.
 
 **Known incompatibilities**
 - AWQ-quantised MoEs (Mixtral-8x22B-Instruct-AWQ): SGLang's MoE architecture detector returns `None` → `AssertionError: ExpertLocationMetadata is required`. No workaround; drop from the sweep.
@@ -58,11 +62,10 @@ python -m moe_cap.systems.sglang \
     --expert-distribution-recorder-mode stat \
     --tp-size 1 \
     --max-running-requests 1 \
-    --enable-metrics \
-    --chunked-prefill-size 32768
+    --enable-metrics
 
 # terminal 2 — drive one config
-python batch_runner.py \
+python -m moe_cap.runner.openai_api_profile \
     --config-file configs/longbench_v2_qwen3_30b.yaml \
     --api-url http://localhost:30000/v1/completions \
     --backend sglang \
@@ -76,15 +79,15 @@ Drop the `--enable-metrics` flag if you don't need the Tier-5 cross-check.
 
 | Situation | Runner |
 |---|---|
-| Per-batch S-MFU / S-MBU (Run 3 goal) | `BATCH_RUNNER=strict` |
-| Peak throughput / real serving workload | default (asyncio overlap) |
-| Continuity with prior Run 3 partial data | default |
+| Standard S-MFU / S-MBU sweep | default MoE-CAP runner |
+| Debug exact client request waves | `BATCH_RUNNER=strict` |
+| Continuity with upstream MoE-CAP behavior | default MoE-CAP runner |
 
-The default runner has two client-side pathologies that break the contract "batch size = server concurrency":
+The upstream runner has two client-side pathologies that break the contract "batch size = server concurrency":
 - At `bs=1` it flood-fires all N prompts at once (`threshold = bs//2 = 0`).
 - At `bs ≥ 2` the next wave is launched when 50 % of the current wave completes, so peak concurrency is ~1.5 × bs.
 
-`batch_runner.py` sends N, awaits all N, then sends the next N — no overlap.
+`batch_runner.py` sends N, awaits all N, then sends the next N — no overlap. It is a debugging runner, not the default measurement path.
 
 ## Profiling-only mode
 
@@ -120,7 +123,7 @@ Set `MOE_CAP_PROFILING_ONLY=1` to skip the per-forward-pass `ExpertDistributionR
 - **#15** MLA FLOPS calculation upstream is wrong → DeepSeek-V2-Lite excluded from Run 3.
 - **#21** Continuous SGLang server across datasets leaks detailed_results / expert_records. Mitigation: per-triple restart (current behaviour).
 - **#22** `batched_prefill` dataset scheduler underfills chunks → dropped from Run 3.
-- **#24** `longbench_v2_maxctx` collapses to the same length as `longbench_v2` for `qwen1_5_moe` (24 K both) and `qwen3_next_80b` (8 K both); only `qwen3_30b` has a true 4 K vs 16 K comparison.
+- **#24** The old `longbench_v2_maxctx` axis collapsed to mixed context lengths. The active sweep now uses one fixed 32 K prefill target, with Qwen1.5-MoE at 32,767 input tokens to reserve one decode token inside its 32K context window.
 
 ## Common failure modes
 
@@ -130,5 +133,5 @@ Set `MOE_CAP_PROFILING_ONLY=1` to skip the per-forward-pass `ExpertDistributionR
 | `KeyError: '<GPU-name>'` in `hardware_utils.py` | New GPU not in dicts | Add entry to `MEM_BW_DICT` and `PEAK_FLOPS_DICT` |
 | `GET /metrics → 404` loop | SGLang launched without `--enable-metrics` | Orchestrator adds it automatically; if debugging manually, pass the flag yourself |
 | `AttributeError: ... has no attribute 'load'` in batch_runner | Loader API is `get_input()`, not `load()` | Already fixed; ensure you're running the latest `batch_runner.py` |
-| OOM at SGLang startup, `mem_fraction_static` < weight fraction | Chunk workspace + weights exceed GPU | Lower `chunk_size_cap` or `target_input_tokens` |
+| OOM at SGLang startup, `mem_fraction_static` < weight fraction | Weights + KV/workspace exceed GPU | Lower `max_batch_size`, then `target_input_tokens`; use explicit `chunked_prefill_size` only as a scheduling workaround |
 | `analyze.py` reports "No valid results found" | `walk_results` didn't descend into `<org>/<model>` leaves | Already fixed; re-run after pulling latest |

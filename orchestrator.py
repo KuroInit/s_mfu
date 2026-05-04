@@ -20,7 +20,7 @@ from sglang_metrics import SGLangMetricsPoller
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 SWEEP_CONFIG_PATH = os.environ.get("SWEEP_CONFIG", "sweep_config.yaml")
-RESULTS_DIR = os.environ.get("RESULTS_DIR", "/results")
+RESULTS_DIR = os.environ.get("RESULTS_DIR", "./results")
 CHECKPOINT_PATH = os.environ.get("CHECKPOINT_PATH", os.path.join(RESULTS_DIR, "checkpoint.yaml"))
 SGLANG_PORT = 30000
 SGLANG_STARTUP_TIMEOUT = 1500  # 25 minutes — covers slow weight loads + warmup across all models/datasets
@@ -199,12 +199,11 @@ def run_benchmark(
 ) -> int:
     """Invoke the configured runner and return its exit code.
 
-    Default is `moe_cap.runner.openai_api_profile`. Set BATCH_RUNNER=strict to
-    use the orchestrator-owned `batch_runner.py` which issues strict-serial
-    waves (no bs=1 flood-fire, no 50% inter-batch overlap). Both runners write
-    the same detailed_results/metadata output schema.
+    Default is MoE-CAP's `moe_cap.runner.openai_api_profile`, so MoE-CAP owns
+    request driving and metric output. Set BATCH_RUNNER=strict to use the
+    harness-owned serial-wave runner for debugging scheduler concurrency.
     """
-    mode = os.environ.get("BATCH_RUNNER", "").lower()
+    mode = os.environ.get("BATCH_RUNNER", "upstream").lower()
     if mode == "strict":
         cmd = [
             sys.executable, "batch_runner.py",
@@ -240,26 +239,84 @@ def _get_max_batch_size(config_file: str) -> Optional[int]:
         return None
 
 
-CHUNK_SIZE_CAP = 32768  # Global default; per-model override via sweep_config.chunk_size_cap.
+def _load_dataset_config(config_file: str) -> dict:
+    """Load one MoE-CAP benchmark YAML."""
+    with open(config_file, "r") as f:
+        return yaml.safe_load(f) or {}
 
 
-def _required_chunk_tokens(config_file: str, batch_size: int) -> int:
-    """Return required chunked-prefill tokens for one dataset config, or 0 if N/A.
+def _get_explicit_chunked_prefill_size(model: dict, dataset_cfg: dict) -> Optional[int]:
+    """Return an explicit chunked-prefill override, if one was configured.
 
-    prefill_mode=batched scales with batch_size; default=single uses one prefill
-    per step. Returns 0 if the dataset disallows this batch_size or has no config.
+    The harness should not infer chunking from target_input_tokens. MoE-CAP and
+    SGLang own scheduling; this knob is only for operator-specified memory workarounds.
     """
-    try:
-        with open(config_file, "r") as f:
-            cfg = yaml.safe_load(f) or {}
-    except FileNotFoundError:
-        return 0
-    max_bs = cfg.get("max_batch_size")
-    if max_bs is not None and batch_size > max_bs:
-        return 0
-    tokens = cfg.get("target_input_tokens", 0)
-    mode = cfg.get("prefill_mode", "single")
-    return tokens * batch_size if mode == "batched" else tokens
+    value = dataset_cfg.get("chunked_prefill_size", model.get("chunked_prefill_size"))
+    return int(value) if value is not None else None
+
+
+def _effective_batch_sizes(batch_sizes: list, dataset_cfg: dict) -> list:
+    """Return sweep batch sizes that are not skipped by max_batch_size."""
+    max_bs = dataset_cfg.get("max_batch_size")
+    if max_bs is None:
+        return batch_sizes
+    return [bs for bs in batch_sizes if bs <= int(max_bs)]
+
+
+def _estimate_per_gpu_memory_gb(model: dict, dataset_cfg: dict, batch_size: int) -> Optional[float]:
+    """Conservative weights + KV estimate for one GPU.
+
+    The optional metadata is deliberately simple and per-GPU after tensor
+    parallelism. It is a preflight guardrail, not part of MoE-CAP metric math.
+    """
+    weight_gb = model.get("weight_gb_per_gpu")
+    kv_bytes = model.get("kv_bytes_per_token_per_gpu")
+    if weight_gb is None or kv_bytes is None:
+        return None
+    tokens = int(dataset_cfg.get("target_input_tokens", 0)) + int(dataset_cfg.get("target_output_tokens", 0))
+    kv_gb = tokens * batch_size * int(kv_bytes) / (1024 ** 3)
+    return float(weight_gb) + kv_gb
+
+
+def validate_sweep_configs(config: dict) -> None:
+    """Fail fast before launching any server if sweep dataset configs are invalid."""
+    datasets = config.get("datasets", [])
+    batch_sizes = config.get("batch_sizes", [])
+    gpu_memory_gb = float(config.get("gpu_memory_gb", 94))
+    for model in config.get("models", []):
+        model_id = model["id"]
+        config_slug = model.get("config_slug", model["slug"])
+        for dataset in datasets:
+            config_file = f"configs/{dataset}_{config_slug}.yaml"
+            if not os.path.exists(config_file):
+                sys.exit(f"ERROR: Missing benchmark config: {config_file}")
+            cfg = _load_dataset_config(config_file)
+            if cfg.get("model_id") != model_id:
+                sys.exit(
+                    f"ERROR: {config_file} model_id={cfg.get('model_id')!r} "
+                    f"does not match sweep model {model_id!r}"
+                )
+            if not cfg.get("fixed_length_mode", False):
+                sys.exit(f"ERROR: {config_file} must set fixed_length_mode: true")
+            if cfg.get("target_input_tokens") is None:
+                sys.exit(f"ERROR: {config_file} must set target_input_tokens")
+            if int(cfg.get("target_output_tokens", 0)) != 1:
+                sys.exit(f"ERROR: {config_file} must set target_output_tokens: 1")
+            max_context = model.get("max_context_tokens")
+            total_tokens = int(cfg["target_input_tokens"]) + int(cfg["target_output_tokens"])
+            if max_context is not None and total_tokens > int(max_context):
+                sys.exit(
+                    f"ERROR: {config_file} requests {total_tokens} total tokens, "
+                    f"but {model_id} max_context_tokens={max_context}"
+                )
+            for bs in _effective_batch_sizes(batch_sizes, cfg):
+                estimated = _estimate_per_gpu_memory_gb(model, cfg, int(bs))
+                if estimated is not None and estimated > gpu_memory_gb:
+                    sys.exit(
+                        f"ERROR: {config_file} bs={bs} estimated per-GPU memory "
+                        f"{estimated:.1f}GB exceeds {gpu_memory_gb:.1f}GB. "
+                        f"Lower max_batch_size or target_input_tokens."
+                    )
 
 
 def load_sweep_config(path: str = SWEEP_CONFIG_PATH) -> dict:
@@ -293,7 +350,6 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
         # read. Defaults to slug — set explicitly when multiple sweep entries share
         # the same dataset configs (e.g., tp=1 and tp=2 variants of one model).
         config_slug = model.get("config_slug", slug)
-        chunk_cap = model.get("chunk_size_cap", CHUNK_SIZE_CAP)
 
         for batch_size in batch_sizes:
             for dataset in datasets:
@@ -304,6 +360,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
 
                 config_file = f"configs/{dataset}_{config_slug}.yaml"
                 output_dir = f"{RESULTS_DIR}/{slug}/bs{batch_size}/{dataset}/"
+                dataset_cfg = _load_dataset_config(config_file) if os.path.exists(config_file) else {}
 
                 max_bs = _get_max_batch_size(config_file)
                 if max_bs is not None and batch_size > max_bs:
@@ -314,13 +371,12 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                     done += 1
                     continue
 
-                required = _required_chunk_tokens(config_file, batch_size)
-                prefill_size = min(required + 50, chunk_cap) if required > 0 else None
+                prefill_size = _get_explicit_chunked_prefill_size(model, dataset_cfg)
 
                 sep = "=" * 60
                 print(f"\n{sep}")
                 print(f"[sweep] [{done+1}/{total}] {slug}  bs={batch_size}  {dataset}")
-                print(f"[sweep]   tp={tp}  chunked_prefill_size={prefill_size}  chunk_cap={chunk_cap}")
+                print(f"[sweep]   tp={tp}  chunked_prefill_size={prefill_size}")
                 print(sep)
 
                 proc = start_sglang(model_id, tp, batch_size, port, prefill_size)
@@ -381,6 +437,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
 def main() -> None:
     config = load_sweep_config()
     checkpoint = Checkpoint()
+    validate_sweep_configs(config)
     validate_models(config["models"])
     run_sweep(config, checkpoint)
 

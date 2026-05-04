@@ -1,4 +1,5 @@
-# Prefill-heavy benchmark: 75% of 32K context = 24K input tokens, 1 output token
+# Prefill-heavy benchmark within a 32K context budget.
+# Qwen1.5-MoE has max_position_embeddings=32768, so reserve one token for decode.
 # Stresses prefill throughput / KV-cache fill with minimal decoding work.
 # Uses LongBench v2 real documents as base text for realistic attention patterns.
 dataset_names: ["longbench_v2"]
@@ -7,6 +8,8 @@ model_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
 dataset_split: train
 
 fixed_length_mode: true
-target_input_tokens: 24576
+target_input_tokens: 32767
 target_output_tokens: 1
 num_samples: 100
+# Conservative 94GB H100 NVL estimate: ~28.6GB weights + ~6GB KV/request.
+max_batch_size: 8

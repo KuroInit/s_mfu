@@ -41,7 +41,7 @@ docker compose up
 - `SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR` — expert-activation dumps (default: `$RESULTS_DIR/expert_records`)
 
 **Runtime tuning**
-- `BATCH_RUNNER=strict` — use the strict-serial runner in `batch_runner.py` instead of MoE-CAP's default asyncio runner (see **Runners** below).
+- `BATCH_RUNNER=strict` — use the harness-owned strict-serial runner in `batch_runner.py` instead of MoE-CAP's default runner (see **Runners** below).
 - `BATCH_RUNNER_REQUEST_TIMEOUT` — per-request timeout in seconds (default: 3600).
 - `METRICS_POLL_INTERVAL` — Tier-5 `/metrics` poll period in seconds (default: 1.0; `0` disables).
 - `MOE_CAP_PROFILING_ONLY=1` — skip the per-forward-pass expert distribution recorder for faster runs (no expert-activation data).
@@ -50,45 +50,53 @@ docker compose up
 
 ## `sweep_config.yaml`
 
-Current Run 3 scope:
+Current 32K prefill scope:
 
 ```yaml
 batch_sizes: [1, 2, 4, 8, 16, 32]
-datasets: [longbench_v2, longbench_v2_maxctx]
+datasets: [longbench_v2]
 port: 30000
+gpu_memory_gb: 94
 
 models:
   - id: Qwen/Qwen1.5-MoE-A2.7B-Chat
     tp: 1
     slug: qwen1_5_moe
-    chunk_size_cap: 32768
+    max_context_tokens: 32768
+    weight_gb_per_gpu: 28.6
+    kv_bytes_per_token_per_gpu: 196608
   - id: Qwen/Qwen3-30B-A3B
     tp: 1
     slug: qwen3_30b
-    chunk_size_cap: 32768
+    max_context_tokens: 40960
+    weight_gb_per_gpu: 60.0
+    kv_bytes_per_token_per_gpu: 98304
   - id: Qwen/Qwen3-Next-80B-A3B-Instruct
     tp: 2
     slug: qwen3_next_80b
-    chunk_size_cap: 16384
+    max_context_tokens: 262144
+    weight_gb_per_gpu: 74.3
+    kv_bytes_per_token_per_gpu: 49152
 ```
 
 - `tp` is set by necessity only — TP=1 unless the model won't fit on one GPU.
-- `chunk_size_cap` caps `--chunked-prefill-size` per model; tight caps (e.g. 16 K on the 80B) claw back KV room.
+- `gpu_memory_gb`, `max_context_tokens`, `weight_gb_per_gpu`, and `kv_bytes_per_token_per_gpu` are harness preflight guardrails. They make impossible batch cells fail before SGLang loads weights.
+- Optional `chunked_prefill_size` can be set per model or dataset when an operator needs an explicit SGLang scheduling override. It is omitted by default so MoE-CAP/SGLang own scheduling.
 
-**Dropped in Run 3:** DeepSeek-V2-Lite (MLA FLOPS upstream bug), Mixtral-8x22B-AWQ (no `ExpertLocationMetadata`). Datasets `prefill` and `batched_prefill` also removed — the former duplicates `maxctx`, the latter suffers carryover + scheduler under-fill contamination (Audit Findings #21/#22).
+**Dropped in this sweep:** DeepSeek-V2-Lite (MLA FLOPS upstream bug), Mixtral-8x22B-AWQ (no `ExpertLocationMetadata`), and duplicate max-context datasets. The active sweep is intentionally one fixed-length LongBench V2 source at a 32K prefill target and 1 output token. Qwen1.5-MoE has a 32,768-token total context window, so its config uses 32,767 input tokens plus 1 decode token; the Qwen3 models use 32,768 input tokens plus 1 decode token.
 
 ## `configs/`
 
-Each `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the runner. They set `fixed_length_mode: true`, `target_output_tokens: 1`, and `target_input_tokens` per model to hold context length roughly constant across batch sizes. Some configs also set `max_batch_size` to cap the sweep for that model × dataset.
+Each active `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the runner. It sets `fixed_length_mode: true`, `target_output_tokens: 1`, `metrics: []`, and `max_batch_size: 8` for the current H100 NVL memory envelope. `target_input_tokens` is 32,768 for the Qwen3 models and 32,767 for Qwen1.5-MoE to fit one decode token inside its 32K context window.
 
 ## How it works
 
 For each `(slug, batch_size, dataset)` triple not yet marked success in the checkpoint:
 
 1. **Pre-flight** — validates all HF model IDs up front (`orchestrator.py:validate_models`).
-2. **Start SGLang** — launches `moe_cap.systems.sglang` with `--enable-metrics` and per-model `--chunked-prefill-size`; polls `/health` until ready (25 min cap).
+2. **Start SGLang** — launches `moe_cap.systems.sglang` with `--enable-metrics`; polls `/health` until ready (25 min cap). `--chunked-prefill-size` is passed only when explicitly configured.
 3. **Start Tier-5 poller** — `sglang_metrics.py` scrapes `/metrics` every `METRICS_POLL_INTERVAL` seconds and writes `sglang_metrics_bs<N>.jsonl` next to the results.
-4. **Run benchmark** — either `moe_cap.runner.openai_api_profile` (default) or `batch_runner.py` (strict).
+4. **Run benchmark** — `moe_cap.runner.openai_api_profile` by default, or `batch_runner.py` when `BATCH_RUNNER=strict`.
 5. **Checkpoint** — success or failure written to `$CHECKPOINT_PATH`.
 6. **Shutdown** — SIGTERM → wait → SIGKILL; wait for the port to clear before the next triple.
 
@@ -96,13 +104,13 @@ SGLang is restarted per triple so detailed_results and expert_records can't blee
 
 ## Runners
 
-**Default** (`moe_cap.runner.openai_api_profile`): MoE-CAP's upstream asyncio runner. Two known client-side pathologies:
+**Default** (`moe_cap.runner.openai_api_profile`): MoE-CAP's runner. This keeps request driving and metric output aligned with the upstream framework.
+
+**Strict** (`BATCH_RUNNER=strict`, `batch_runner.py`): sends N, awaits all N, then sends the next N. Reuses MoE-CAP's loaders and output schema. Use this only when debugging client concurrency or scheduler behavior.
+
+The upstream runner has two known client-side pathologies if you need the client-side contract "batch size = exact request wave size":
 - at `bs=1`, all N prompts are fired concurrently (threshold `bs // 2 == 0`);
 - at `bs ≥ 2`, the next wave launches when half the current wave completes, so peak concurrency is ~1.5 × bs.
-
-**Strict** (`batch_runner.py`, enabled with `BATCH_RUNNER=strict`): sends N, awaits all N, then sends the next N. No overlap. Reuses MoE-CAP's loaders so prompts are identical, pulls per-forward-pass records via `/dump_expert_distribution_record`, and writes the same `detailed_results_*.jsonl` + `metadata_*.json` schema.
-
-Use strict when you want batch size to equal server concurrency (e.g. per-batch S-MFU / S-MBU). Use default for continuity with prior runs.
 
 ## Results layout
 

@@ -1,36 +1,42 @@
-# Run 3 sweep configuration (revised 2026-04-15).
+# Fixed 32K-prefill sweep configuration.
 # Scope:
 #   - DeepSeek-V2-Lite dropped (MLA FLOPS upstream bug masks results, see
 #     Audit Findings #15).
-#   - Datasets reduced to longbench_v2 + longbench_v2_maxctx only (drop `prefill`
-#     which duplicates maxctx, and drop `batched_prefill` per Findings #21/#22
-#     where carryover + scheduler under-fill contaminate the metric).
-#   - Batch sizes capped at 32 (higher batches fragmented the chunk window).
+#   - One fixed-length LongBench V2 text source: 32K prefill target, 1 output
+#     token. Qwen1.5-MoE uses 32,767 input tokens because its total context
+#     window is exactly 32,768.
+#   - Batch sizes capped at 32 for the current H100 NVL memory envelope.
 #   - TP chosen by necessity only: tp=1 unless the model won't fit on one
 #     H100 NVL (94 GB). Only qwen3_next_80b needs tp=2. Previous tp=1 vs tp=2
-#     comparison dropped — overhead was ~1–4 pp on qwen1_5_moe (see Experiment
-#     Results "TP=1 vs TP=2" Run 3 partial), not a research axis for Run 3.
+#     comparison dropped — overhead was ~1–4 pp on qwen1_5_moe in prior
+#     experiments, not a research axis for this sweep.
 batch_sizes: [1, 2, 4, 8, 16, 32]
-datasets: [longbench_v2, longbench_v2_maxctx]
+datasets: [longbench_v2]
 port: 30000
+gpu_memory_gb: 94
 
-# chunk_size_cap (optional): hard cap on --chunked-prefill-size passed to SGLang.
-# Used when the default 32K global cap is either too tight (smaller models with
-# plenty of headroom can chunk larger) or too loose (qwen3_next_80b: weight
-# footprint 74 GB/GPU leaves ~17 GB free; 32K chunk forced KV pool to zero).
-# Lower this on the 80B to claw back KV room if you want to try longer contexts.
+# chunked_prefill_size (optional, per model): explicit override for
+# --chunked-prefill-size. Omit it by default so MoE-CAP/SGLang own scheduling.
+# Optional resource metadata is per GPU after tensor parallelism. It is used
+# only for harness preflight checks; MoE-CAP remains the source of metric math.
 models:
   - id: Qwen/Qwen1.5-MoE-A2.7B-Chat
     tp: 1
     slug: qwen1_5_moe
-    chunk_size_cap: 32768
+    max_context_tokens: 32768
+    weight_gb_per_gpu: 28.6
+    kv_bytes_per_token_per_gpu: 196608
 
   - id: Qwen/Qwen3-30B-A3B
     tp: 1
     slug: qwen3_30b
-    chunk_size_cap: 32768
+    max_context_tokens: 40960
+    weight_gb_per_gpu: 60.0
+    kv_bytes_per_token_per_gpu: 98304
 
   - id: Qwen/Qwen3-Next-80B-A3B-Instruct
     tp: 2
     slug: qwen3_next_80b
-    chunk_size_cap: 16384
+    max_context_tokens: 262144
+    weight_gb_per_gpu: 74.3
+    kv_bytes_per_token_per_gpu: 49152

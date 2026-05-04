@@ -8,6 +8,7 @@
 #   HF_HOME           — HuggingFace cache dir   (default: ~/.cache/huggingface)
 #   RESULTS_DIR       — where results are saved  (default: ./results)
 #   SWEEP_CONFIG      — sweep config file        (default: sweep_config.yaml)
+#   BATCH_RUNNER      — upstream or strict       (default: upstream)
 #   SKIP_INSTALL      — set to 1 to skip pip install steps
 #   ANALYZE_ONLY      — set to 1 to skip the sweep and run analyze.py only
 

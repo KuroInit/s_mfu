@@ -1,12 +1,14 @@
-# LongBench v2: real long-context documents, truncated to fit bs=128.
-# Qwen1.5-MoE: 32K context, 75% = 24K. KV=12KB/tok, 28.6GB weights.
+# Fixed-length prefill benchmark within a 32K context budget.
+# Qwen1.5-MoE has max_position_embeddings=32768, so reserve one token for decode.
 dataset_names: ["longbench_v2"]
-metrics: ["em"]
+metrics: []
 model_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
 precision: bfloat16
 dataset_split: train
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 24576
+target_input_tokens: 32767
 target_output_tokens: 1
+# Conservative 94GB H100 NVL estimate: ~28.6GB weights + ~6GB KV/request.
+max_batch_size: 8

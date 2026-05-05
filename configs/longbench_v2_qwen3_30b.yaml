@@ -9,5 +9,5 @@ num_samples: 200
 fixed_length_mode: true
 target_input_tokens: 32768
 target_output_tokens: 1
-# Conservative 94GB H100 NVL estimate: ~60GB weights + ~3GB KV/request.
-max_batch_size: 8
+# Capacity-collapse test: let the sweep attempt high batch sizes.
+max_batch_size: 128

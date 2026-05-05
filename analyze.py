@@ -630,6 +630,11 @@ def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Pa
 
     xs = [p[2] for p in points]
     ys = [p[3] for p in points]
+    moe_cap_ys = [
+        m.get("prefill_raw_tflops", 0) / m.get("num_gpus", 1)
+        for _, _, _, _, m in points
+        if m.get("prefill_raw_tflops", 0) > 0 and m.get("num_gpus", 1)
+    ]
     ridge = peak_dense / peak_bw
     x_min = min(min(xs), ridge) / 2
     x_max = max(max(xs), ridge) * 2
@@ -658,15 +663,31 @@ def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Pa
             color=color,
             label=slug,
         )
+        moe_cap_y = [
+            p[4].get("prefill_raw_tflops", 0) / p[4].get("num_gpus", 1)
+            for p in slug_points
+        ]
+        if any(v > 0 for v in moe_cap_y):
+            ax.plot(
+                [p[2] for p in slug_points],
+                moe_cap_y,
+                "o:",
+                color=color,
+                alpha=0.4,
+                markerfacecolor="none",
+                label=f"{slug} (MoE-CAP S-MFU)",
+            )
         for _, bs, x, y, metrics in slug_points:
-            smfu = metrics.get("prefill_roofline_smfu", 0)
-            smbu = metrics.get("prefill_roofline_smbu", 0)
+            roof_smfu = metrics.get("prefill_roofline_smfu", 0)
+            roof_smbu = metrics.get("prefill_roofline_smbu", 0)
+            smfu = metrics.get("prefill_smfu", 0)
+            smbu = metrics.get("prefill_smbu", 0)
             ax.annotate(
-                f"bs{bs}\n{smfu:.1f}% MFU\n{smbu:.2f}% MBU",
+                f"bs{bs}\nS-MFU {smfu:.1f}% / S-MBU {smbu:.1f}%\nRoof {roof_smfu:.1f}% / {roof_smbu:.2f}%",
                 xy=(x, y),
                 xytext=(5, 5),
                 textcoords="offset points",
-                fontsize=7,
+                fontsize=6,
                 color=color,
             )
 
@@ -676,8 +697,17 @@ def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Pa
     ax.set_ylabel("Achieved prefill performance per GPU (TFLOPs/s)")
     ax.set_title(f"{dataset} — Prefill Roofline")
     ax.set_xlim(x_min, x_max)
-    y_floor = min(_positive(ys + [peak_bw * x_min])) / 2
-    ax.set_ylim(y_floor, peak_dense * 1.6)
+    y_floor = min(_positive(ys + moe_cap_ys + [peak_bw * x_min])) / 2
+    y_top = max(max(_positive(ys + moe_cap_ys), default=peak_dense), peak_dense) * 1.6
+    ax.set_ylim(y_floor, y_top)
+    secax = ax.secondary_yaxis(
+        "right",
+        functions=(
+            lambda tflops: tflops / peak_dense * 100,
+            lambda pct: pct / 100 * peak_dense,
+        ),
+    )
+    secax.set_ylabel("S-MFU equivalent (%)")
     ax.grid(True, which="both", linestyle=":", linewidth=0.6, alpha=0.5)
     ax.legend(loc="best", fontsize="small")
 

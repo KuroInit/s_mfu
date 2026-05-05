@@ -31,12 +31,12 @@ def test_qwen1_5_uses_75_percent_context_window():
     assert cfg["target_input_tokens"] + cfg["target_output_tokens"] <= 32768
 
 
-def test_qwen3_30b_32k_sweep_is_capped_for_h100_nvl_memory():
-    cfg = _load_yaml("configs/longbench_v2_qwen3_30b.yaml")
+def test_active_qwen3_30b_batched_prefill_sweep_can_exercise_high_batch():
+    cfg = _load_yaml("configs/batched_prefill_qwen3_30b.yaml")
 
-    assert cfg["target_input_tokens"] == 32768
+    assert cfg["prefill_mode"] == "batched"
+    assert cfg["target_input_tokens"] == 1024
     assert cfg["target_output_tokens"] == 1
-    assert cfg["max_batch_size"] <= 8
 
 
 def test_active_sweep_batch_cells_fit_h100_nvl_memory_estimate():

@@ -179,6 +179,45 @@ def _aggregate_raw_throughput(records: list) -> dict:
     }
 
 
+def _prefill_shape_metrics(records: list) -> dict:
+    """Summarize the actual prefill forward-pass shape recorded by SGLang.
+
+    For a batched prefill roofline, the relevant X coordinate is the amount of
+    prefill work in the forward passes SGLang actually executed, not the sweep
+    label. `seq_lens_sum` is already the packed B*S token mass for each prefill
+    step, so a token-weighted average gives one representative roofline point
+    for the run while de-emphasizing the final partial wave.
+    """
+    if not records:
+        return {}
+
+    batch_sizes = []
+    seq_sums = []
+    for r in records:
+        try:
+            rb = int(r.get("batch_size") or 0)
+            seq = int(r.get("seq_lens_sum") or 0)
+        except (TypeError, ValueError):
+            continue
+        if rb > 0:
+            batch_sizes.append(rb)
+        if seq > 0:
+            seq_sums.append(seq)
+
+    metrics = {"prefill_record_count": len(records)}
+    if batch_sizes:
+        metrics["prefill_actual_max_batch_size"] = max(batch_sizes)
+        metrics["prefill_actual_avg_batch_size"] = sum(batch_sizes) / len(batch_sizes)
+    if seq_sums:
+        total_seq = sum(seq_sums)
+        metrics["prefill_actual_max_seq_lens_sum"] = max(seq_sums)
+        metrics["prefill_actual_avg_seq_lens_sum"] = total_seq / len(seq_sums)
+        metrics["prefill_actual_token_weighted_seq_lens_sum"] = (
+            sum(seq * seq for seq in seq_sums) / total_seq
+        )
+    return metrics
+
+
 def _scale_tflops_with_server_tps(metrics: dict, server_tps: float) -> None:
     """Use server token throughput to correct achieved TFLOPS timing.
 
@@ -202,11 +241,14 @@ def _scale_tflops_with_server_tps(metrics: dict, server_tps: float) -> None:
 def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_tokens: Optional[int]) -> None:
     """Add roofline coordinates and MFU/MBU readings to a metrics dict.
 
-    Roofline X uses the prefill linear-projection approximation AI ~= B*S
-    FLOPs/byte. Roofline Y is achieved dense-equivalent TFLOPS/s per GPU, so
-    the compute roof is the single-GPU dense peak (989 TFLOPS for H100 BF16).
-    If Tier-5 server throughput is available, Y is the server-corrected value;
-    otherwise it falls back to the MoE-CAP raw TFLOPS value.
+    Roofline X uses the recorded prefill forward-pass token mass when present:
+    AI ~= actual seq_lens_sum. This is the physical B*S that SGLang packed,
+    not just the sweep label. For older records without shape data, it falls
+    back to batch_size * target_input_tokens.
+
+    Roofline Y is achieved dense-equivalent TFLOPS/s per GPU. If Tier-5 server
+    throughput is available, Y is the server-corrected value; otherwise it
+    falls back to the MoE-CAP raw TFLOPS value.
     """
     if not target_input_tokens or target_input_tokens <= 0:
         return
@@ -217,7 +259,10 @@ def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_toke
     if not peak_dense or not peak_bw or not num_gpus:
         return
 
-    intensity = batch_size * target_input_tokens
+    actual_intensity = metrics.get("prefill_actual_token_weighted_seq_lens_sum", 0)
+    intensity = actual_intensity if actual_intensity and actual_intensity > 0 else (
+        batch_size * target_input_tokens
+    )
     achieved = metrics.get("prefill_roofline_tflops")
     if achieved is None:
         achieved = metrics.get("prefill_raw_tflops", 0)
@@ -227,6 +272,7 @@ def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_toke
 
     metrics["prefill_target_input_tokens"] = target_input_tokens
     metrics["prefill_arithmetic_intensity"] = intensity
+    metrics["prefill_intended_arithmetic_intensity"] = batch_size * target_input_tokens
     metrics["prefill_roofline_tflops_total"] = achieved
     metrics["prefill_roofline_tflops_per_gpu"] = achieved_per_gpu
     metrics["prefill_roofline_smfu"] = (achieved_per_gpu / peak_dense * 100) if peak_dense else 0
@@ -346,6 +392,7 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         "peak_memory_tbps_per_gpu": peak_memory_tbps,
         "num_gpus": num_gpus,
     }
+    metrics.update(_prefill_shape_metrics(records))
 
     # For Qwen3-Next: also compute with legacy Qwen3 path for comparison
     if "Qwen3-Next" in model_name:
@@ -729,8 +776,14 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         "prefill_total_tokens", "prefill_total_latency",
         # Derived
         "prefill_raw_tflops", "prefill_smfu", "prefill_smbu",
+        # Actual SGLang prefill shape used to validate the batch sweep.
+        "prefill_record_count", "prefill_actual_max_batch_size",
+        "prefill_actual_avg_batch_size", "prefill_actual_max_seq_lens_sum",
+        "prefill_actual_avg_seq_lens_sum",
+        "prefill_actual_token_weighted_seq_lens_sum",
         # Roofline coordinates/readings. MFU/MBU are relative to the roofs.
         "prefill_target_input_tokens", "prefill_arithmetic_intensity",
+        "prefill_intended_arithmetic_intensity",
         "prefill_roofline_tflops_total", "prefill_roofline_tflops_per_gpu",
         "prefill_roofline_smfu",
         "prefill_roofline_bandwidth_tbps", "prefill_roofline_smbu",
@@ -881,6 +934,7 @@ def main() -> None:
               f"S-MBU={metrics['prefill_smbu']:.1f}%")
         if "prefill_roofline_tflops" in metrics:
             print(f"    roofline: AI={metrics['prefill_arithmetic_intensity']:.0f} "
+                  f"(actual max batch={metrics.get('prefill_actual_max_batch_size', 0):.0f}) "
                   f"TFLOPS/GPU={metrics['prefill_roofline_tflops_per_gpu']:.1f} "
                   f"MFU={metrics['prefill_roofline_smfu']:.1f}% "
                   f"MBU={metrics['prefill_roofline_smbu']:.2f}%")

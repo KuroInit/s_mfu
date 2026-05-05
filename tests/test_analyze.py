@@ -471,6 +471,18 @@ def test_plot_metric_per_dataset_with_legacy_line(tmp_path):
     assert out.exists()
 
 
+def test_plot_smfu_smbu_for_model_saves_file(tmp_path):
+    from analyze import plot_smfu_smbu_for_model
+    bs_data = {
+        8: {"prefill_smfu": 29.6, "prefill_smbu": 3.0},
+        32: {"prefill_smfu": 27.1, "prefill_smbu": 2.9},
+        128: {"prefill_smfu": 26.0, "prefill_smbu": 2.9},
+    }
+    out = tmp_path / "qwen1_5_moe_smfu_smbu_longbench_v2.png"
+    plot_smfu_smbu_for_model("qwen1_5_moe", "longbench_v2", bs_data, out)
+    assert out.exists()
+
+
 # ── write_raw_values ──────────────────────────────────────────────────────────
 
 def test_write_raw_values_emits_every_cell(tmp_path):

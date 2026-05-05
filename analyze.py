@@ -506,6 +506,50 @@ def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
     print(f"Saved {out_path}")
 
 
+def plot_smfu_smbu_for_model(slug: str, dataset: str, bs_data: dict, out_path: Path) -> None:
+    """Plot S-MFU and S-MBU vs batch size for one model on one figure."""
+    batch_sizes = sorted(bs_data.keys())
+    if not batch_sizes:
+        return
+
+    smfu_vals = [bs_data[bs].get("prefill_smfu", 0) for bs in batch_sizes]
+    smbu_vals = [bs_data[bs].get("prefill_smbu", 0) for bs in batch_sizes]
+    y_vals = [v for v in smfu_vals + smbu_vals if isinstance(v, (int, float))]
+    if not y_vals:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(batch_sizes, smfu_vals, "o-", color="tab:blue", label="S-MFU")
+    ax.plot(batch_sizes, smbu_vals, "s-", color="tab:orange", label="S-MBU")
+
+    if any("prefill_smfu_legacy" in bs_data[bs] for bs in batch_sizes):
+        legacy_smfu = [bs_data[bs].get("prefill_smfu_legacy", 0) for bs in batch_sizes]
+        ax.plot(batch_sizes, legacy_smfu, "o:", color="tab:blue", alpha=0.45,
+                label="S-MFU (legacy)")
+        y_vals.extend(legacy_smfu)
+
+    if any("prefill_smbu_legacy" in bs_data[bs] for bs in batch_sizes):
+        legacy_smbu = [bs_data[bs].get("prefill_smbu_legacy", 0) for bs in batch_sizes]
+        ax.plot(batch_sizes, legacy_smbu, "s:", color="tab:orange", alpha=0.45,
+                label="S-MBU (legacy)")
+        y_vals.extend(legacy_smbu)
+
+    ax.set_xscale("log")
+    ax.set_xticks(batch_sizes)
+    ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax.set_xlabel("Batch Size")
+    ax.set_ylabel("Utilization (%)")
+    ax.set_title(f"{slug} — S-MFU / S-MBU — {dataset}")
+    ax.set_ylim(0, max(y_vals) + 20)
+    ax.legend(loc="best")
+    ax.grid(True, which="both", linestyle=":", linewidth=0.6, alpha=0.5)
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
 def plot_legacy_comparison(slug: str, dataset: str, bs_data: dict,
                            metric_label: str, current_key: str, legacy_key: str,
                            out_path: Path) -> None:
@@ -853,6 +897,11 @@ def main() -> None:
         plot_roofline_per_dataset(
             dataset, per_slug, results_dir / f"roofline_{dataset}.png",
         )
+        for slug, bs_data in sorted(per_slug.items()):
+            plot_smfu_smbu_for_model(
+                slug, dataset, bs_data,
+                results_dir / f"{slug}_smfu_smbu_{dataset}.png",
+            )
 
         # Dedicated qwen3_next_80b current-vs-legacy comparison (one fig per metric).
         qn_slug = "qwen3_next_80b"

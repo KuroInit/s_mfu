@@ -597,14 +597,15 @@ def _positive(values):
 def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Path) -> None:
     """Plot prefill roofline: arithmetic intensity vs achieved TFLOPS.
 
-    S-MFU and S-MBU are represented as readings against the compute and memory
-    roofs rather than as separate axes.
+    Points use MoE-CAP's prefill S-MFU-derived TFLOPS. S-MFU and S-MBU are
+    shown as readings against the compute and memory roofs.
     """
     points = []
     for slug, bs_data in sorted(per_slug_bs_data.items()):
         for bs, metrics in sorted(bs_data.items()):
             x = metrics.get("prefill_arithmetic_intensity", 0)
-            y = metrics.get("prefill_roofline_tflops_per_gpu", 0)
+            num_gpus = metrics.get("num_gpus", 1)
+            y = metrics.get("prefill_raw_tflops", 0) / num_gpus if num_gpus else 0
             if x > 0 and y > 0:
                 points.append((slug, bs, x, y, metrics))
 
@@ -630,24 +631,33 @@ def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Pa
 
     xs = [p[2] for p in points]
     ys = [p[3] for p in points]
-    moe_cap_ys = [
-        m.get("prefill_raw_tflops", 0) / m.get("num_gpus", 1)
-        for _, _, _, _, m in points
-        if m.get("prefill_raw_tflops", 0) > 0 and m.get("num_gpus", 1)
-    ]
     ridge = peak_dense / peak_bw
-    x_min = min(min(xs), ridge) / 2
-    x_max = max(max(xs), ridge) * 2
-    roof_x = [x_min, ridge, x_max]
-    roof_y = [
-        min(peak_dense, peak_bw * x_min),
-        peak_dense,
-        peak_dense,
+    x_min_data = min(xs)
+    x_max_data = max(xs)
+    y_min_data = min(ys)
+    y_max_data = max(ys)
+
+    # Pad log axes multiplicatively and include the ridge only when doing so
+    # does not dwarf the actual measured points.
+    x_min = x_min_data / 1.5
+    x_max = x_max_data * 1.5
+    if x_min / 10 <= ridge <= x_max * 10:
+        x_min = min(x_min, ridge / 1.5)
+        x_max = max(x_max, ridge * 1.5)
+
+    log_x_min = math.log10(x_min)
+    log_x_max = math.log10(x_max)
+    roof_x = [
+        10 ** (log_x_min + (log_x_max - log_x_min) * i / 99)
+        for i in range(100)
     ]
+    roof_y = [min(peak_dense, peak_bw * x) for x in roof_x]
 
     fig, ax = plt.subplots(figsize=(10, 7))
     ax.plot(roof_x, roof_y, color="black", linewidth=2.0, label="Roofline")
-    ax.axvline(ridge, color="0.45", linestyle=":", linewidth=1.2, label=f"Ridge ~{ridge:.0f} FLOPs/byte")
+    if x_min <= ridge <= x_max:
+        ax.axvline(ridge, color="0.45", linestyle=":", linewidth=1.2,
+                   label=f"Ridge ~{ridge:.0f} FLOPs/byte")
 
     color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     for i, slug in enumerate(sorted(per_slug_bs_data.keys())):
@@ -663,31 +673,15 @@ def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Pa
             color=color,
             label=slug,
         )
-        moe_cap_y = [
-            p[4].get("prefill_raw_tflops", 0) / p[4].get("num_gpus", 1)
-            for p in slug_points
-        ]
-        if any(v > 0 for v in moe_cap_y):
-            ax.plot(
-                [p[2] for p in slug_points],
-                moe_cap_y,
-                "o:",
-                color=color,
-                alpha=0.4,
-                markerfacecolor="none",
-                label=f"{slug} (MoE-CAP S-MFU)",
-            )
         for _, bs, x, y, metrics in slug_points:
-            roof_smfu = metrics.get("prefill_roofline_smfu", 0)
-            roof_smbu = metrics.get("prefill_roofline_smbu", 0)
             smfu = metrics.get("prefill_smfu", 0)
             smbu = metrics.get("prefill_smbu", 0)
             ax.annotate(
-                f"bs{bs}\nS-MFU {smfu:.1f}% / S-MBU {smbu:.1f}%\nRoof {roof_smfu:.1f}% / {roof_smbu:.2f}%",
+                f"bs{bs}\nS-MFU {smfu:.1f}%\nS-MBU {smbu:.1f}%",
                 xy=(x, y),
                 xytext=(5, 5),
                 textcoords="offset points",
-                fontsize=6,
+                fontsize=7,
                 color=color,
             )
 
@@ -697,8 +691,10 @@ def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Pa
     ax.set_ylabel("Achieved prefill performance per GPU (TFLOPs/s)")
     ax.set_title(f"{dataset} — Prefill Roofline")
     ax.set_xlim(x_min, x_max)
-    y_floor = min(_positive(ys + moe_cap_ys + [peak_bw * x_min])) / 2
-    y_top = max(max(_positive(ys + moe_cap_ys), default=peak_dense), peak_dense) * 1.6
+    y_floor = max(y_min_data / 1.5, 1e-6)
+    y_top = y_max_data * 1.5
+    if y_floor <= peak_dense <= y_top * 10:
+        y_top = max(y_top, peak_dense * 1.5)
     ax.set_ylim(y_floor, y_top)
     secax = ax.secondary_yaxis(
         "right",

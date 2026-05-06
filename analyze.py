@@ -2,6 +2,7 @@
 """Post-processing script: recomputes S_MFU/S_MBU from sweep results and plots them."""
 
 import glob
+import csv
 import json
 import math
 import os
@@ -761,15 +762,11 @@ def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Pa
 
 
 def write_raw_values(raw: list, out_path: Path) -> None:
-    """Write a plaintext dump of every computed metric grouped by dataset.
+    """Write every computed metric cell to CSV.
 
     Args:
         raw: list of (slug, batch_size, dataset, metrics_dict) tuples.
     """
-    by_dataset: dict = defaultdict(list)
-    for slug, bs, dataset, metrics in raw:
-        by_dataset[dataset].append((slug, bs, metrics))
-
     metric_order = [
         # MoE-CAP throughput plus analyze.py aggregate cross-checks
         "prefill_tokens_per_sec", "prefill_tokens_per_sec_aggregate",
@@ -798,26 +795,21 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         "prefill_roofline_bandwidth_tbps_legacy", "prefill_roofline_smbu_legacy",
     ]
 
-    lines = ["# Raw computed metrics — produced by analyze.py",
-             "# Each section lists every (slug, batch_size) cell for that dataset.",
-             ""]
-    for dataset in sorted(by_dataset.keys()):
-        lines.append(f"=== Dataset: {dataset} ===")
-        rows = sorted(by_dataset[dataset], key=lambda t: (t[0], t[1]))
-        keys_present = [k for k in metric_order
-                        if any(k in m for _, _, m in rows)]
-        header = ["slug", "batch_size"] + keys_present
-        widths = [max(len(str(h)), 14) for h in header]
-        lines.append("  ".join(h.ljust(w) for h, w in zip(header, widths)))
-        for slug, bs, metrics in rows:
-            row = [slug, str(bs)]
-            for k in keys_present:
-                v = metrics.get(k)
-                row.append(f"{v:.2f}" if isinstance(v, (int, float)) else "—")
-            lines.append("  ".join(c.ljust(w) for c, w in zip(row, widths)))
-        lines.append("")
+    rows = sorted(raw, key=lambda t: (t[2], t[0], t[1]))
+    keys_present = [
+        k for k in metric_order
+        if any(k in metrics for _, _, _, metrics in rows)
+    ]
+    fieldnames = ["dataset", "slug", "batch_size"] + keys_present
 
-    out_path.write_text("\n".join(lines))
+    with out_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for slug, bs, dataset, metrics in rows:
+            row = {"dataset": dataset, "slug": slug, "batch_size": bs}
+            for k in keys_present:
+                row[k] = metrics.get(k, "")
+            writer.writerow(row)
     print(f"Saved {out_path}")
 
 
@@ -949,7 +941,7 @@ def main() -> None:
         sys.exit(1)
 
     # Raw-value dump first — always emitted, even if plotting fails.
-    write_raw_values(raw, results_dir / "raw_values.txt")
+    write_raw_values(raw, results_dir / "raw_values.csv")
 
     # One figure per (dataset, metric) with every model drawn as a line.
     per_dataset = aggregate_by_dataset(raw)

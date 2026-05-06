@@ -487,9 +487,10 @@ def test_plot_smfu_smbu_for_model_saves_file(tmp_path):
 
 def test_write_raw_values_emits_every_cell(tmp_path):
     from analyze import write_raw_values
+    import csv
     raw = [
         ("model_a", 1, "longbench_v2", {"prefill_smfu": 30.0,
-                                         "prefill_smbu": 1.2,
+                                        "prefill_smbu": 1.2,
                                          "prefill_raw_tflops": 300.0}),
         ("model_b", 1, "longbench_v2", {"prefill_smfu": 20.0,
                                          "prefill_smbu": 1.1,
@@ -498,19 +499,19 @@ def test_write_raw_values_emits_every_cell(tmp_path):
                                                  "prefill_smbu": 2.0,
                                                  "prefill_raw_tflops": 550.0}),
     ]
-    out = tmp_path / "raw_values.txt"
+    out = tmp_path / "raw_values.csv"
     write_raw_values(raw, out)
-    content = out.read_text()
-    assert "longbench_v2" in content
-    assert "longbench_v2_maxctx" in content
-    assert "model_a" in content
-    assert "model_b" in content
-    # Numerical values present
-    assert "30.00" in content
-    assert "55.00" in content
+    with out.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    assert len(rows) == 3
+    assert {r["dataset"] for r in rows} == {"longbench_v2", "longbench_v2_maxctx"}
+    assert {r["slug"] for r in rows} == {"model_a", "model_b"}
+    assert {float(r["prefill_smfu"]) for r in rows} == {20.0, 30.0, 55.0}
 
 def test_write_raw_values_includes_legacy_columns_when_present(tmp_path):
     from analyze import write_raw_values
+    import csv
     raw = [
         ("qwen3_next_80b", 64, "longbench_v2",
          {"prefill_smfu": 14.9, "prefill_smbu": 6.6,
@@ -518,21 +519,24 @@ def test_write_raw_values_includes_legacy_columns_when_present(tmp_path):
           "prefill_smfu_legacy": 14.9, "prefill_smbu_legacy": 6.6,
           "prefill_raw_tflops_legacy": 295.4}),
     ]
-    out = tmp_path / "raw_values.txt"
+    out = tmp_path / "raw_values.csv"
     write_raw_values(raw, out)
-    content = out.read_text()
-    assert "prefill_smfu_legacy" in content
-    assert "prefill_raw_tflops_legacy" in content
+    with out.open(newline="") as f:
+        reader = csv.DictReader(f)
+        assert "prefill_smfu_legacy" in reader.fieldnames
+        assert "prefill_raw_tflops_legacy" in reader.fieldnames
 
 def test_write_raw_values_skips_absent_legacy_columns(tmp_path):
     """Non-Qwen3-Next rows have no legacy keys — the column header should not appear."""
     from analyze import write_raw_values
+    import csv
     raw = [
         ("qwen1_5_moe", 1, "longbench_v2",
          {"prefill_smfu": 30.0, "prefill_smbu": 1.2,
           "prefill_raw_tflops": 300.0}),
     ]
-    out = tmp_path / "raw_values.txt"
+    out = tmp_path / "raw_values.csv"
     write_raw_values(raw, out)
-    content = out.read_text()
-    assert "prefill_smfu_legacy" not in content
+    with out.open(newline="") as f:
+        reader = csv.DictReader(f)
+        assert "prefill_smfu_legacy" not in reader.fieldnames

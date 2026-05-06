@@ -164,8 +164,8 @@ def test_compute_smfu_smbu_returns_percentages():
     assert result["prefill_smbu"] == pytest.approx(55.0)
     assert result["prefill_tokens_per_sec"] == pytest.approx(1234.0)
     assert result["prefill_tokens_per_sec_aggregate"] == pytest.approx(0.0)
-    assert "decoding_smfu" not in result
-    assert "decoding_smbu" not in result
+    assert result["decoding_smfu"] == pytest.approx(30.0)
+    assert result["decoding_smbu"] == pytest.approx(88.0)
 
 def test_compute_smfu_smbu_returns_none_on_key_error():
     from analyze import compute_smfu_smbu
@@ -318,10 +318,12 @@ def test_compute_smfu_smbu_includes_raw_tflops():
          patch("analyze.get_peak_flops", return_value=1979e12):
         result = compute_smfu_smbu(records, meta)
     assert "prefill_raw_tflops" in result
-    assert "decoding_raw_tflops" not in result
+    assert "decoding_raw_tflops" in result
     # raw_tflops = smfu_fraction * num_gpus * peak_tflops / 2
     expected_prefill = 0.42 * 1 * 1979 / 2
+    expected_decode = 0.30 * 1 * 1979 / 2
     assert result["prefill_raw_tflops"] == pytest.approx(expected_prefill, rel=1e-3)
+    assert result["decoding_raw_tflops"] == pytest.approx(expected_decode, rel=1e-3)
 
 
 def test_server_tps_diagnostic_does_not_replace_moe_cap_roofline():
@@ -376,11 +378,11 @@ def test_compute_smfu_smbu_qwen3_next_includes_legacy():
 
     # Primary metrics (Qwen3-Next correct path)
     assert result["prefill_smfu"] == pytest.approx(20.0)
-    assert "decoding_smfu" not in result
+    assert result["decoding_smfu"] == pytest.approx(15.0)
     # Legacy metrics (Qwen3 path for comparison)
     assert result["prefill_smfu_legacy"] == pytest.approx(50.0)
     assert result["prefill_smbu_legacy"] == pytest.approx(60.0)
-    assert "decoding_smfu_legacy" not in result
+    assert result["decoding_smfu_legacy"] == pytest.approx(45.0)
 
 
 def test_compute_smfu_smbu_non_qwen3_next_has_no_legacy():
@@ -556,7 +558,8 @@ def test_write_raw_values_includes_run_metadata_columns(tmp_path):
          {"prefill_smfu": 12.0, "prefill_smbu": 4.0,
           "runner_mode": "strict_barrier_waves_v2",
           "chunked_prefill_size": 32768,
-          "max_prefill_tokens": 32768}),
+          "max_prefill_tokens": 32768,
+          "mem_fraction_static": 0.9}),
     ]
     out = tmp_path / "raw_values.csv"
     write_raw_values(raw, out)
@@ -566,6 +569,7 @@ def test_write_raw_values_includes_run_metadata_columns(tmp_path):
     assert rows[0]["runner_mode"] == "strict_barrier_waves_v2"
     assert rows[0]["chunked_prefill_size"] == "32768"
     assert rows[0]["max_prefill_tokens"] == "32768"
+    assert rows[0]["mem_fraction_static"] == "0.9"
 
 
 def test_write_raw_values_includes_legacy_columns_when_present(tmp_path):

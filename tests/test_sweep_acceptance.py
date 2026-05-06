@@ -38,10 +38,12 @@ def test_active_batched_prefill_sweep_can_exercise_high_batch_with_chunking():
 
     assert cfg["prefill_mode"] == "batched"
     assert cfg["target_input_tokens"] == 1024
-    assert cfg["target_output_tokens"] == 1
-    assert cfg["chunked_prefill_size"] == 150000
-    assert cfg["max_prefill_tokens"] == 150000
-    # Prompts tokenize to roughly 1,050 tokens, so keep slack above 128 * 1K.
+    assert cfg["target_output_tokens"] == 128
+    assert cfg["chunked_prefill_size"] == 131072
+    assert cfg["max_prefill_tokens"] == 131072
+    assert cfg["mem_fraction_static"] == 0.9
+    # Prompts tokenize to roughly 1,050 tokens; this fits the intended 1K target
+    # while avoiding the 150K startup-memory failure.
     assert 128 * cfg["target_input_tokens"] <= cfg["chunked_prefill_size"]
     assert 128 * cfg["target_input_tokens"] <= cfg["max_prefill_tokens"]
 

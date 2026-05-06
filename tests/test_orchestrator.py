@@ -324,14 +324,13 @@ class TestRunBenchmark:
         cmd = mock_run.call_args[0][0]
         assert "--config-file" in cmd
         assert "configs/gsm8k_qwen3_30b.yaml" in cmd
-        assert "--server-batch-size" in cmd
-        assert "64" in cmd
+        assert "--server-batch-size" not in cmd
         assert "--backend" in cmd
         assert "sglang" in cmd
         assert "--output_dir" in cmd
         assert "/results/qwen3_30b/bs64/gsm8k/" in cmd
 
-    def test_defaults_to_strict_runner(self, monkeypatch):
+    def test_defaults_to_upstream_auto_runner(self, monkeypatch):
         from orchestrator import run_benchmark
         monkeypatch.delenv("BATCH_RUNNER", raising=False)
         with patch("orchestrator.subprocess.run") as mock_run:
@@ -343,9 +342,25 @@ class TestRunBenchmark:
                 port=30000,
             )
         cmd = mock_run.call_args[0][0]
-        assert cmd[1] == "batch_runner.py"
+        assert cmd[1:3] == ["-m", "moe_cap.runner.openai_api_profile"]
+        assert "--server-batch-size" not in cmd
 
-    def test_upstream_runner_is_opt_in(self, monkeypatch):
+    def test_strict_runner_is_opt_in(self, monkeypatch):
+        from orchestrator import run_benchmark
+        monkeypatch.setenv("BATCH_RUNNER", "strict")
+        with patch("orchestrator.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            run_benchmark(
+                config_file="configs/longbench_v2_qwen3_30b.yaml",
+                batch_size=1,
+                output_dir="/results/qwen3_30b/bs1/longbench_v2/",
+                port=30000,
+            )
+        cmd = mock_run.call_args[0][0]
+        assert cmd[1] == "batch_runner.py"
+        assert "--server-batch-size" in cmd
+
+    def test_upstream_runner_with_fixed_client_batch_is_opt_in(self, monkeypatch):
         from orchestrator import run_benchmark
         monkeypatch.setenv("BATCH_RUNNER", "upstream")
         with patch("orchestrator.subprocess.run") as mock_run:
@@ -358,6 +373,7 @@ class TestRunBenchmark:
             )
         cmd = mock_run.call_args[0][0]
         assert cmd[1:3] == ["-m", "moe_cap.runner.openai_api_profile"]
+        assert "--server-batch-size" in cmd
 
 
 # ─── Config Loading Tests ────────────────────────────────────────────────────
@@ -527,11 +543,11 @@ class TestSweepConfigValidation:
         with pytest.raises(SystemExit):
             validate_sweep_configs(self._make_sweep())
 
-    def test_validate_sweep_configs_requires_one_output_token(self, tmp_path, monkeypatch):
+    def test_validate_sweep_configs_requires_positive_output_tokens(self, tmp_path, monkeypatch):
         from orchestrator import validate_sweep_configs
         configs = tmp_path / "configs"
         configs.mkdir()
-        self._write_config(configs, "longbench_v2_model_a", target_output_tokens=2)
+        self._write_config(configs, "longbench_v2_model_a", target_output_tokens=0)
         monkeypatch.chdir(tmp_path)
         with pytest.raises(SystemExit):
             validate_sweep_configs(self._make_sweep())
@@ -584,3 +600,14 @@ class TestSweepConfigValidation:
             {"max_prefill_tokens": 65536}, {"max_prefill_tokens": 32768}
         ) == 32768
         assert _get_explicit_max_prefill_tokens({}, {}) is None
+
+    def test_explicit_mem_fraction_static_can_be_set_on_model_or_dataset(self):
+        from orchestrator import _get_explicit_mem_fraction_static
+
+        assert _get_explicit_mem_fraction_static(
+            {"mem_fraction_static": 0.8}, {}
+        ) == 0.8
+        assert _get_explicit_mem_fraction_static(
+            {"mem_fraction_static": 0.8}, {"mem_fraction_static": 0.9}
+        ) == 0.9
+        assert _get_explicit_mem_fraction_static({}, {}) is None

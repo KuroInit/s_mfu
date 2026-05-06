@@ -359,8 +359,9 @@ def _merge_tier5(metrics: dict, snaps: list, batch_size: int) -> None:
 def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
     """Compute prefill metrics using MoE-CAP wherever possible.
 
-    MoE-CAP is the ground truth for S-MFU, S-MBU, and prefill throughput
-    (`prefill_tp`). analyze.py keeps aggregate token/time primitives as
+    MoE-CAP is the ground truth for S-MFU, S-MBU, prefill throughput
+    (`prefill_tp`), and decoding throughput (`decoding_throughput`).
+    analyze.py keeps aggregate token/time primitives as
     cross-checks because MoE-CAP does not expose those totals directly.
     raw_tflops is reconstructed from MoE-CAP S-MFU × MoE-CAP peak dense FLOPS.
 
@@ -381,7 +382,8 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         precision=precision_str,
     )
 
-    raw = _aggregate_raw_throughput(records)
+    prefill_records = [r for r in records if r.get("forward_mode") == "prefill"]
+    raw = _aggregate_raw_throughput(prefill_records)
 
     result = _run_metrics(records, model_name, precision_str, num_gpus, gpu_raw_type, cap_config)
     if not result:
@@ -396,23 +398,31 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
     peak_memory_tbps = get_peak_bw(gpu_raw_type) / 1e12 if gpu_raw_type else 0
 
     prefill_smfu_frac = result.get("prefill_smfu", 0)
+    decoding_smfu_frac = result.get("decoding_smfu", 0)
     moe_cap_prefill_tps = result.get("prefill_tp")
     if moe_cap_prefill_tps is None:
         moe_cap_prefill_tps = raw["tokens_per_sec"]
+    moe_cap_decoding_tps = result.get("decoding_throughput", 0)
 
     metrics = {
         "prefill_tokens_per_sec": moe_cap_prefill_tps,
+        "decoding_tokens_per_sec": moe_cap_decoding_tps,
         "prefill_tokens_per_sec_aggregate": raw["tokens_per_sec"],
         "prefill_total_tokens":   raw["total_tokens"],
         "prefill_total_latency":  raw["total_latency"],
         "prefill_raw_tflops":     prefill_smfu_frac * num_gpus * peak_tflops_dense,
+        "decoding_raw_tflops":    decoding_smfu_frac * num_gpus * peak_tflops_dense,
         "prefill_smfu":           prefill_smfu_frac * 100,
         "prefill_smbu":           result.get("prefill_smbu", 0) * 100,
+        "decoding_smfu":          decoding_smfu_frac * 100,
+        "decoding_smbu":          result.get("decoding_smbu", 0) * 100,
+        "ttft":                   result.get("ttft", 0),
+        "tpot":                   result.get("tpot", 0),
         "peak_dense_tflops_per_gpu": peak_tflops_dense,
         "peak_memory_tbps_per_gpu": peak_memory_tbps,
         "num_gpus": num_gpus,
     }
-    metrics.update(_prefill_shape_metrics(records))
+    metrics.update(_prefill_shape_metrics(prefill_records))
 
     # For Qwen3-Next: also compute with legacy Qwen3 path for comparison
     if "Qwen3-Next" in model_name:
@@ -423,6 +433,10 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
             metrics["prefill_raw_tflops_legacy"] = leg_prefill * num_gpus * peak_tflops_dense
             metrics["prefill_smfu_legacy"]       = leg_prefill * 100
             metrics["prefill_smbu_legacy"]       = legacy_result.get("prefill_smbu", 0) * 100
+            leg_decode = legacy_result.get("decoding_smfu", 0)
+            metrics["decoding_raw_tflops_legacy"] = leg_decode * num_gpus * peak_tflops_dense
+            metrics["decoding_smfu_legacy"]       = leg_decode * 100
+            metrics["decoding_smbu_legacy"]       = legacy_result.get("decoding_smbu", 0) * 100
 
     return metrics
 
@@ -438,7 +452,12 @@ def _copy_run_metadata(metrics: dict, metadata: dict, dataset_cfg: dict) -> None
     metrics["client_success_count"] = system.get("client_success_count", "")
     metrics["client_fail_count"] = system.get("client_fail_count", "")
 
-    for key in ("chunked_prefill_size", "max_prefill_tokens", "target_output_tokens"):
+    for key in (
+        "chunked_prefill_size",
+        "max_prefill_tokens",
+        "mem_fraction_static",
+        "target_output_tokens",
+    ):
         value = model_cfg.get(key)
         if value is None:
             value = dataset_cfg.get(key)
@@ -833,13 +852,17 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         # Run-shaping metadata
         "runner_mode", "inference_engine", "num_prompts",
         "client_success_count", "client_fail_count",
-        "chunked_prefill_size", "max_prefill_tokens", "target_output_tokens",
+        "chunked_prefill_size", "max_prefill_tokens", "mem_fraction_static",
+        "target_output_tokens",
         "disable_radix_cache",
         # MoE-CAP throughput plus analyze.py aggregate cross-checks
-        "prefill_tokens_per_sec", "prefill_tokens_per_sec_aggregate",
+        "prefill_tokens_per_sec", "decoding_tokens_per_sec",
+        "prefill_tokens_per_sec_aggregate",
         "prefill_total_tokens", "prefill_total_latency",
         # Derived
-        "prefill_raw_tflops", "prefill_smfu", "prefill_smbu",
+        "prefill_raw_tflops", "decoding_raw_tflops",
+        "prefill_smfu", "prefill_smbu", "decoding_smfu", "decoding_smbu",
+        "ttft", "tpot",
         # Actual SGLang prefill shape used to validate the batch sweep.
         "prefill_record_count", "prefill_actual_max_batch_size",
         "prefill_actual_avg_batch_size", "prefill_actual_max_seq_lens_sum",
@@ -862,7 +885,9 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         "server_tokens_per_sec", "client_vs_server_delta_pct",
         "peak_running_reqs", "peak_cache_hit_rate",
         # Legacy Qwen3-path derivations (Qwen3-Next only)
-        "prefill_raw_tflops_legacy", "prefill_smfu_legacy", "prefill_smbu_legacy",
+        "prefill_raw_tflops_legacy", "decoding_raw_tflops_legacy",
+        "prefill_smfu_legacy", "prefill_smbu_legacy",
+        "decoding_smfu_legacy", "decoding_smbu_legacy",
         "prefill_roofline_tflops_total_legacy", "prefill_roofline_tflops_per_gpu_legacy",
         "prefill_roofline_smfu_legacy",
         "prefill_roofline_bandwidth_tbps_legacy", "prefill_roofline_smbu_legacy",
@@ -985,12 +1010,11 @@ def main() -> None:
         if meta is None:
             continue
 
-        # Only keep prefill records — decode is meaningless with target_output_tokens=1
         prefill_records = [r for r in records if r.get("forward_mode") == "prefill"]
         if not prefill_records:
             warnings.warn(f"No prefill records in {slug} {bs_dir_name} {dataset} — skipping")
             continue
-        normalized = normalize_records(prefill_records)
+        normalized = normalize_records(records)
         metrics = compute_smfu_smbu(normalized, meta)
         if metrics is None:
             warnings.warn(f"Skipping {slug} {bs_dir_name} {dataset} — no valid metrics")
@@ -1017,6 +1041,12 @@ def main() -> None:
               f"TFLOPS={metrics['prefill_raw_tflops']:.1f} "
               f"S-MFU={metrics['prefill_smfu']:.1f}% "
               f"S-MBU={metrics['prefill_smbu']:.1f}%")
+        if metrics.get("decoding_tokens_per_sec", 0):
+            print(f"    decoding: tok/s={metrics['decoding_tokens_per_sec']:.0f} "
+                  f"TFLOPS={metrics['decoding_raw_tflops']:.1f} "
+                  f"S-MFU={metrics['decoding_smfu']:.1f}% "
+                  f"S-MBU={metrics['decoding_smbu']:.1f}% "
+                  f"TPOT={metrics.get('tpot', 0):.4f}s")
         if "prefill_roofline_tflops_per_gpu" in metrics:
             print(f"    roofline: AI={metrics['prefill_arithmetic_intensity']:.0f} "
                   f"(actual max batch={metrics.get('prefill_actual_max_batch_size', 0):.0f}) "
@@ -1056,13 +1086,32 @@ def main() -> None:
             legacy_key="prefill_smbu_legacy",
         )
         plot_metric_per_dataset(
+            dataset, per_slug, "Decoding S-MFU (%)", "decoding_smfu",
+            results_dir / f"decoding_smfu_{dataset}.png",
+            legacy_key="decoding_smfu_legacy",
+        )
+        plot_metric_per_dataset(
+            dataset, per_slug, "Decoding S-MBU (%)", "decoding_smbu",
+            results_dir / f"decoding_smbu_{dataset}.png",
+            legacy_key="decoding_smbu_legacy",
+        )
+        plot_metric_per_dataset(
             dataset, per_slug, "Prefill TFLOPS", "prefill_raw_tflops",
             results_dir / f"raw_flops_{dataset}.png",
             legacy_key="prefill_raw_tflops_legacy",
         )
         plot_metric_per_dataset(
+            dataset, per_slug, "Decoding TFLOPS", "decoding_raw_tflops",
+            results_dir / f"decoding_raw_flops_{dataset}.png",
+            legacy_key="decoding_raw_tflops_legacy",
+        )
+        plot_metric_per_dataset(
             dataset, per_slug, "Prefill tokens/sec", "prefill_tokens_per_sec",
             results_dir / f"tokens_per_sec_{dataset}.png",
+        )
+        plot_metric_per_dataset(
+            dataset, per_slug, "Decoding tokens/sec", "decoding_tokens_per_sec",
+            results_dir / f"decoding_tokens_per_sec_{dataset}.png",
         )
         plot_roofline_per_dataset(
             dataset, per_slug, results_dir / f"roofline_{dataset}.png",

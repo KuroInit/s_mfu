@@ -1,6 +1,6 @@
 # Batched prefill: 1K input × N concurrent requests packed into scheduling
-# chunks. Tokenized prompts are ~1,050 tokens, so 128 concurrent prefill
-# requests need ~135K tokens of prefill budget plus slack.
+# chunks. Uses non-trivial decoding so MoE-CAP reports both prefill and decode
+# sparse-utilization metrics, matching the paper's dual-stage instrumentation.
 dataset_names: ["longbench_v2"]
 metrics: []
 model_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
@@ -10,7 +10,8 @@ num_samples: 200
 
 fixed_length_mode: true
 target_input_tokens: 1024
-target_output_tokens: 1
-chunked_prefill_size: 150000
-max_prefill_tokens: 150000
+target_output_tokens: 128
+chunked_prefill_size: 131072
+max_prefill_tokens: 131072
+mem_fraction_static: 0.9
 prefill_mode: batched

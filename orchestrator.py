@@ -218,11 +218,12 @@ def run_benchmark(
 ) -> int:
     """Invoke the configured runner and return its exit code.
 
-    Default is the harness-owned strict-serial runner because this sweep needs
-    the client-side contract "batch_size = one request wave". Set
-    BATCH_RUNNER=upstream to use MoE-CAP's openai_api_profile runner.
+    Default is MoE-CAP's upstream runner in auto batching mode, matching the
+    paper's adaptive continuous-batching setup. Set BATCH_RUNNER=strict for the
+    harness-owned fixed-wave runner, or BATCH_RUNNER=upstream to pass an
+    explicit --server-batch-size to MoE-CAP's runner.
     """
-    mode = os.environ.get("BATCH_RUNNER", "strict").lower()
+    mode = os.environ.get("BATCH_RUNNER", "upstream_auto").lower()
     if mode == "strict":
         cmd = [
             sys.executable, "batch_runner.py",
@@ -232,7 +233,7 @@ def run_benchmark(
             "--server-batch-size", str(batch_size),
             "--output_dir", output_dir,
         ]
-    else:
+    elif mode == "upstream":
         cmd = [
             sys.executable, "-m", "moe_cap.runner.openai_api_profile",
             "--config-file", config_file,
@@ -241,6 +242,18 @@ def run_benchmark(
             "--server-batch-size", str(batch_size),
             "--output_dir", output_dir,
         ]
+    elif mode in {"upstream_auto", "auto"}:
+        cmd = [
+            sys.executable, "-m", "moe_cap.runner.openai_api_profile",
+            "--config-file", config_file,
+            "--api-url", f"http://localhost:{port}/v1/completions",
+            "--backend", "sglang",
+            "--output_dir", output_dir,
+        ]
+    else:
+        raise ValueError(
+            f"Unknown BATCH_RUNNER={mode!r}; expected strict, upstream, or upstream_auto"
+        )
     print(f"[runner] {' '.join(cmd)}")
     result = subprocess.run(cmd, check=False)
     return result.returncode
@@ -356,8 +369,8 @@ def validate_sweep_configs(config: dict) -> None:
                 sys.exit(f"ERROR: {config_file} must set fixed_length_mode: true")
             if cfg.get("target_input_tokens") is None:
                 sys.exit(f"ERROR: {config_file} must set target_input_tokens")
-            if int(cfg.get("target_output_tokens", 0)) != 1:
-                sys.exit(f"ERROR: {config_file} must set target_output_tokens: 1")
+            if int(cfg.get("target_output_tokens", 0)) <= 0:
+                sys.exit(f"ERROR: {config_file} must set positive target_output_tokens")
             max_context = model.get("max_context_tokens")
             total_tokens = int(cfg["target_input_tokens"]) + int(cfg["target_output_tokens"])
             if max_context is not None and total_tokens > int(max_context):

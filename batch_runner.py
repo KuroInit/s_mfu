@@ -266,6 +266,7 @@ def main() -> int:
             "target_output_tokens": output_len,
             "chunked_prefill_size": cfg.get("chunked_prefill_size"),
             "max_prefill_tokens": cfg.get("max_prefill_tokens"),
+            "mem_fraction_static": cfg.get("mem_fraction_static"),
         },
         "system_environment": {
             "inference_engine": args.backend,

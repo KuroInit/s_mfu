@@ -1,4 +1,4 @@
-"""SGLang Prometheus /metrics poller — server-side ground truth for throughput.
+"""SGLang Prometheus /metrics poller — server-side throughput cross-check.
 
 A small background thread that scrapes the SGLang /metrics endpoint at a
 fixed cadence during one benchmark run. Used as an independent cross-check
@@ -24,7 +24,7 @@ import requests
 
 
 TRACKED_SERIES = (
-    # Monotonic counters — primary ground truth for throughput
+    # Monotonic counters — independent server-side throughput diagnostic
     "sglang:prompt_tokens_total",
     "sglang:generation_tokens_total",
     # Gauges — falsify serial-wave contract and detect cache contamination

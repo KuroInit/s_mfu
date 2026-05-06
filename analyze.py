@@ -219,24 +219,19 @@ def _prefill_shape_metrics(records: list) -> dict:
     return metrics
 
 
-def _scale_tflops_with_server_tps(metrics: dict, server_tps: float) -> None:
-    """Use server token throughput to correct achieved TFLOPS timing.
-
-    MoE-CAP supplies the per-token FLOP model, but its per-forward timing can be
-    wrong for chunked prefill. Scaling by server/client token throughput keeps
-    the FLOP accounting while replacing the bad time denominator.
-    """
+def _add_server_adjusted_tflops(metrics: dict, server_tps: float) -> None:
+    """Add /metrics-scaled TFLOPS as diagnostics without touching MoE-CAP values."""
     client_tps = metrics.get("prefill_tokens_per_sec", 0)
     raw_tflops = metrics.get("prefill_raw_tflops", 0)
     if not server_tps or not client_tps or not raw_tflops:
         return
 
     scale = server_tps / client_tps
-    metrics["prefill_roofline_tflops"] = raw_tflops * scale
+    metrics["prefill_server_adjusted_tflops_total"] = raw_tflops * scale
 
     legacy_tflops = metrics.get("prefill_raw_tflops_legacy")
     if legacy_tflops is not None:
-        metrics["prefill_roofline_tflops_legacy"] = legacy_tflops * scale
+        metrics["prefill_server_adjusted_tflops_total_legacy"] = legacy_tflops * scale
 
 
 def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_tokens: Optional[int]) -> None:
@@ -247,9 +242,9 @@ def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_toke
     not just the sweep label. For older records without shape data, it falls
     back to batch_size * target_input_tokens.
 
-    Roofline Y is achieved dense-equivalent TFLOPS/s per GPU. If Tier-5 server
-    throughput is available, Y is the server-corrected value; otherwise it
-    falls back to the MoE-CAP raw TFLOPS value.
+    Roofline Y is achieved dense-equivalent TFLOPS/s per GPU from MoE-CAP
+    S-MFU. Server /metrics diagnostics are kept under server_adjusted keys and
+    never replace these MoE-CAP roofline coordinates.
     """
     if not target_input_tokens or target_input_tokens <= 0:
         return
@@ -264,9 +259,7 @@ def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_toke
     intensity = actual_intensity if actual_intensity and actual_intensity > 0 else (
         batch_size * target_input_tokens
     )
-    achieved = metrics.get("prefill_roofline_tflops")
-    if achieved is None:
-        achieved = metrics.get("prefill_raw_tflops", 0)
+    achieved = metrics.get("prefill_raw_tflops", 0)
 
     achieved_per_gpu = achieved / num_gpus
     achieved_bw = (achieved_per_gpu / intensity) if intensity > 0 else 0
@@ -280,7 +273,20 @@ def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_toke
     metrics["prefill_roofline_bandwidth_tbps"] = achieved_bw
     metrics["prefill_roofline_smbu"] = (achieved_bw / peak_bw * 100) if peak_bw else 0
 
-    legacy = metrics.get("prefill_roofline_tflops_legacy")
+    server_adjusted = metrics.get("prefill_server_adjusted_tflops_total")
+    if server_adjusted is not None:
+        server_per_gpu = server_adjusted / num_gpus
+        server_bw = server_per_gpu / intensity
+        metrics["prefill_server_adjusted_tflops_per_gpu"] = server_per_gpu
+        metrics["prefill_server_adjusted_smfu"] = (
+            server_per_gpu / peak_dense * 100 if peak_dense else 0
+        )
+        metrics["prefill_server_adjusted_bandwidth_tbps"] = server_bw
+        metrics["prefill_server_adjusted_smbu"] = (
+            server_bw / peak_bw * 100 if peak_bw else 0
+        )
+
+    legacy = metrics.get("prefill_raw_tflops_legacy")
     if legacy is not None:
         legacy_per_gpu = legacy / num_gpus
         legacy_bw = legacy_per_gpu / intensity
@@ -292,6 +298,19 @@ def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_toke
         metrics["prefill_roofline_bandwidth_tbps_legacy"] = legacy_bw
         metrics["prefill_roofline_smbu_legacy"] = (
             legacy_bw / peak_bw * 100 if peak_bw else 0
+        )
+
+    server_legacy = metrics.get("prefill_server_adjusted_tflops_total_legacy")
+    if server_legacy is not None:
+        server_legacy_per_gpu = server_legacy / num_gpus
+        server_legacy_bw = server_legacy_per_gpu / intensity
+        metrics["prefill_server_adjusted_tflops_per_gpu_legacy"] = server_legacy_per_gpu
+        metrics["prefill_server_adjusted_smfu_legacy"] = (
+            server_legacy_per_gpu / peak_dense * 100 if peak_dense else 0
+        )
+        metrics["prefill_server_adjusted_bandwidth_tbps_legacy"] = server_legacy_bw
+        metrics["prefill_server_adjusted_smbu_legacy"] = (
+            server_legacy_bw / peak_bw * 100 if peak_bw else 0
         )
 
 
@@ -320,7 +339,7 @@ def _merge_tier5(metrics: dict, snaps: list, batch_size: int) -> None:
     if server_tps and client_tps:
         delta_pct = abs(client_tps - server_tps) / server_tps * 100
         metrics["client_vs_server_delta_pct"] = delta_pct
-        _scale_tflops_with_server_tps(metrics, server_tps)
+        _add_server_adjusted_tflops(metrics, server_tps)
         if delta_pct > 5:
             warnings.warn(
                 f"Tier 5: client tok/s={client_tps:.0f} vs server tok/s={server_tps:.0f} "
@@ -406,6 +425,29 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
             metrics["prefill_smbu_legacy"]       = legacy_result.get("prefill_smbu", 0) * 100
 
     return metrics
+
+
+def _copy_run_metadata(metrics: dict, metadata: dict, dataset_cfg: dict) -> None:
+    """Attach run-shaping metadata that affects result interpretation."""
+    model_cfg = metadata.get("model_config", {})
+    system = metadata.get("system_environment", {})
+
+    metrics["runner_mode"] = system.get("batch_runner", "upstream_or_unknown")
+    metrics["inference_engine"] = system.get("inference_engine", "")
+    metrics["num_prompts"] = system.get("num_prompts", "")
+    metrics["client_success_count"] = system.get("client_success_count", "")
+    metrics["client_fail_count"] = system.get("client_fail_count", "")
+
+    for key in ("chunked_prefill_size", "max_prefill_tokens", "target_output_tokens"):
+        value = model_cfg.get(key)
+        if value is None:
+            value = dataset_cfg.get(key)
+        if value is not None:
+            metrics[key] = value
+
+    disable_radix = system.get("disable_radix_cache")
+    if disable_radix is not None:
+        metrics["disable_radix_cache"] = disable_radix
 
 
 def aggregate_results(raw: list) -> dict:
@@ -768,6 +810,11 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         raw: list of (slug, batch_size, dataset, metrics_dict) tuples.
     """
     metric_order = [
+        # Run-shaping metadata
+        "runner_mode", "inference_engine", "num_prompts",
+        "client_success_count", "client_fail_count",
+        "chunked_prefill_size", "max_prefill_tokens", "target_output_tokens",
+        "disable_radix_cache",
         # MoE-CAP throughput plus analyze.py aggregate cross-checks
         "prefill_tokens_per_sec", "prefill_tokens_per_sec_aggregate",
         "prefill_total_tokens", "prefill_total_latency",
@@ -784,6 +831,12 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         "prefill_roofline_tflops_total", "prefill_roofline_tflops_per_gpu",
         "prefill_roofline_smfu",
         "prefill_roofline_bandwidth_tbps", "prefill_roofline_smbu",
+        # /metrics-scaled diagnostics. These do not replace MoE-CAP roofline fields.
+        "prefill_server_adjusted_tflops_total",
+        "prefill_server_adjusted_tflops_per_gpu",
+        "prefill_server_adjusted_smfu",
+        "prefill_server_adjusted_bandwidth_tbps",
+        "prefill_server_adjusted_smbu",
         "peak_dense_tflops_per_gpu", "peak_memory_tbps_per_gpu", "num_gpus",
         # Tier 5 server-side cross-check (/metrics counters)
         "server_tokens_per_sec", "client_vs_server_delta_pct",
@@ -793,6 +846,11 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         "prefill_roofline_tflops_total_legacy", "prefill_roofline_tflops_per_gpu_legacy",
         "prefill_roofline_smfu_legacy",
         "prefill_roofline_bandwidth_tbps_legacy", "prefill_roofline_smbu_legacy",
+        "prefill_server_adjusted_tflops_total_legacy",
+        "prefill_server_adjusted_tflops_per_gpu_legacy",
+        "prefill_server_adjusted_smfu_legacy",
+        "prefill_server_adjusted_bandwidth_tbps_legacy",
+        "prefill_server_adjusted_smbu_legacy",
     ]
 
     rows = sorted(raw, key=lambda t: (t[2], t[0], t[1]))
@@ -878,6 +936,18 @@ def resolve_target_input_tokens(
     return max(candidates) if candidates else None
 
 
+def load_dataset_config_for_result(repo_dir: Path, dataset: str, slug: str) -> dict:
+    """Best-effort load of configs/<dataset>_<slug>.yaml for result metadata."""
+    config_path = repo_dir / "configs" / f"{dataset}_{slug}.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        return yaml.safe_load(config_path.read_text()) or {}
+    except Exception as exc:
+        warnings.warn(f"Could not read dataset config from {config_path}: {exc}")
+        return {}
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         print("Usage: python analyze.py <RESULTS_DIR>", file=sys.stderr)
@@ -913,8 +983,11 @@ def main() -> None:
         snap_path = dataset_dir / f"sglang_metrics_bs{bs}.jsonl"
         snaps = load_snapshots(str(snap_path))
         _merge_tier5(metrics, snaps, bs)
+        repo_dir = Path(__file__).resolve().parent
+        dataset_cfg = load_dataset_config_for_result(repo_dir, dataset, slug)
+        _copy_run_metadata(metrics, meta, dataset_cfg)
         target_input_tokens = resolve_target_input_tokens(
-            meta, normalized, slug, dataset, Path(__file__).resolve().parent
+            meta, normalized, slug, dataset, repo_dir
         )
         _finalize_roofline_metrics(metrics, bs, target_input_tokens)
 
@@ -924,12 +997,17 @@ def main() -> None:
               f"TFLOPS={metrics['prefill_raw_tflops']:.1f} "
               f"S-MFU={metrics['prefill_smfu']:.1f}% "
               f"S-MBU={metrics['prefill_smbu']:.1f}%")
-        if "prefill_roofline_tflops" in metrics:
+        if "prefill_roofline_tflops_per_gpu" in metrics:
             print(f"    roofline: AI={metrics['prefill_arithmetic_intensity']:.0f} "
                   f"(actual max batch={metrics.get('prefill_actual_max_batch_size', 0):.0f}) "
                   f"TFLOPS/GPU={metrics['prefill_roofline_tflops_per_gpu']:.1f} "
                   f"MFU={metrics['prefill_roofline_smfu']:.1f}% "
                   f"MBU={metrics['prefill_roofline_smbu']:.2f}%")
+        if "prefill_server_adjusted_tflops_per_gpu" in metrics:
+            print(f"    server-adjusted diagnostic: "
+                  f"TFLOPS/GPU={metrics['prefill_server_adjusted_tflops_per_gpu']:.1f} "
+                  f"MFU={metrics['prefill_server_adjusted_smfu']:.1f}% "
+                  f"MBU={metrics['prefill_server_adjusted_smbu']:.2f}%")
         if "prefill_smfu_legacy" in metrics:
             print(f"    legacy: "
                   f"TFLOPS={metrics['prefill_raw_tflops_legacy']:.1f} "

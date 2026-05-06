@@ -324,6 +324,30 @@ def test_compute_smfu_smbu_includes_raw_tflops():
     assert result["prefill_raw_tflops"] == pytest.approx(expected_prefill, rel=1e-3)
 
 
+def test_server_tps_diagnostic_does_not_replace_moe_cap_roofline():
+    from analyze import _finalize_roofline_metrics, _merge_tier5
+    metrics = {
+        "prefill_tokens_per_sec": 100.0,
+        "prefill_raw_tflops": 200.0,
+        "prefill_smfu": 20.0,
+        "peak_dense_tflops_per_gpu": 1000.0,
+        "peak_memory_tbps_per_gpu": 3.35,
+        "num_gpus": 1,
+    }
+    snaps = [
+        {"_ts": 0.0, "sglang:prompt_tokens_total": 0.0},
+        {"_ts": 1.0, "sglang:prompt_tokens_total": 50.0},
+    ]
+
+    _merge_tier5(metrics, snaps, batch_size=1)
+    _finalize_roofline_metrics(metrics, batch_size=1, target_input_tokens=1024)
+
+    assert metrics["prefill_roofline_tflops_total"] == pytest.approx(200.0)
+    assert metrics["prefill_roofline_smfu"] == pytest.approx(20.0)
+    assert metrics["prefill_server_adjusted_tflops_total"] == pytest.approx(100.0)
+    assert "prefill_roofline_tflops" not in metrics
+
+
 # ── compute_smfu_smbu Qwen3-Next legacy comparison ───────────────────────────
 
 def test_compute_smfu_smbu_qwen3_next_includes_legacy():
@@ -508,6 +532,27 @@ def test_write_raw_values_emits_every_cell(tmp_path):
     assert {r["dataset"] for r in rows} == {"longbench_v2", "longbench_v2_maxctx"}
     assert {r["slug"] for r in rows} == {"model_a", "model_b"}
     assert {float(r["prefill_smfu"]) for r in rows} == {20.0, 30.0, 55.0}
+
+
+def test_write_raw_values_includes_run_metadata_columns(tmp_path):
+    from analyze import write_raw_values
+    import csv
+    raw = [
+        ("qwen1_5_moe", 2, "batched_prefill",
+         {"prefill_smfu": 12.0, "prefill_smbu": 4.0,
+          "runner_mode": "strict_barrier_waves_v2",
+          "chunked_prefill_size": 32768,
+          "max_prefill_tokens": 32768}),
+    ]
+    out = tmp_path / "raw_values.csv"
+    write_raw_values(raw, out)
+    with out.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    assert rows[0]["runner_mode"] == "strict_barrier_waves_v2"
+    assert rows[0]["chunked_prefill_size"] == "32768"
+    assert rows[0]["max_prefill_tokens"] == "32768"
+
 
 def test_write_raw_values_includes_legacy_columns_when_present(tmp_path):
     from analyze import write_raw_values

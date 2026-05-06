@@ -452,7 +452,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                         done += 1
                         continue
 
-                    # Tier 5: server-side ground-truth throughput + serial-wave proof.
+                    # Tier 5: server-side throughput diagnostic + serial-wave proof.
                     poller = None
                     interval = float(os.environ.get("METRICS_POLL_INTERVAL", METRICS_POLL_INTERVAL))
                     if interval > 0:

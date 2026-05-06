@@ -24,6 +24,7 @@ import concurrent.futures
 import json
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -38,7 +39,13 @@ from moe_cap.data_loader.loader_registry import get_loader_for_task
 REQUEST_TIMEOUT = int(os.environ.get("BATCH_RUNNER_REQUEST_TIMEOUT", "3600"))
 
 
-def _send_one(api_url: str, model: str, prompt: str, output_len: int) -> dict:
+def _send_one(
+    api_url: str,
+    model: str,
+    prompt: str,
+    output_len: int,
+    start_barrier: threading.Barrier | None = None,
+) -> dict:
     """Issue one /v1/completions call and return client-side timing + usage."""
     payload = {
         "model": model,
@@ -48,6 +55,11 @@ def _send_one(api_url: str, model: str, prompt: str, output_len: int) -> dict:
         "stream": False,
         "ignore_eos": True,
     }
+    if start_barrier is not None:
+        try:
+            start_barrier.wait(timeout=10)
+        except threading.BrokenBarrierError:
+            pass
     t0 = time.perf_counter()
     try:
         resp = requests.post(api_url, json=payload, timeout=REQUEST_TIMEOUT)
@@ -78,8 +90,9 @@ def run_serial_waves(
 ) -> list:
     """Submit prompts in strict N-at-a-time waves. Waves do NOT overlap.
 
-    Each wave uses a fresh ThreadPoolExecutor with exactly batch_size workers;
-    the enclosing 'with' block doesn't return until all N have finished.
+    Each wave uses a fresh ThreadPoolExecutor with exactly batch_size workers
+    and a start barrier so requests in the wave are released together. The
+    enclosing 'with' block doesn't return until all N have finished.
     """
     results = []
     n = len(prompts)
@@ -91,8 +104,9 @@ def run_serial_waves(
         wave = prompts[start:end]
         print(f"[batch_runner] wave {w+1}/{wave_count}: submitting {len(wave)} requests")
         wave_t0 = time.perf_counter()
+        barrier = threading.Barrier(len(wave)) if len(wave) > 1 else None
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(wave)) as pool:
-            futures = [pool.submit(_send_one, api_url, model, p, output_len)
+            futures = [pool.submit(_send_one, api_url, model, p, output_len, barrier)
                        for p in wave]
             wave_results = [f.result() for f in futures]
         wave_dt = time.perf_counter() - wave_t0
@@ -245,16 +259,25 @@ def main() -> int:
 
     metadata_dict = {
         "hardware": {"gpu_type": gpu_type, "num_gpus": num_gpus},
-        "model_config": {"model_name": model_name, "precision": precision},
+        "model_config": {
+            "model_name": model_name,
+            "precision": precision,
+            "target_input_tokens": cfg.get("target_input_tokens"),
+            "target_output_tokens": output_len,
+            "chunked_prefill_size": cfg.get("chunked_prefill_size"),
+            "max_prefill_tokens": cfg.get("max_prefill_tokens"),
+        },
         "system_environment": {
             "inference_engine": args.backend,
             "inference_engine_version": info.get("version", "unknown"),
             "batch_size": args.server_batch_size,
-            "batch_runner": "serial_waves_v1",
+            "batch_runner": "strict_barrier_waves_v2",
             "num_prompts": len(prompts),
             "total_wall_time_sec": total_time,
             "client_success_count": ok,
             "client_fail_count": len(prompts) - ok,
+            "disable_radix_cache": os.environ.get("DISABLE_RADIX_CACHE", "1").lower()
+            not in {"0", "false", "no"},
         },
     }
 

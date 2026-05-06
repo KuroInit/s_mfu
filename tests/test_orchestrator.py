@@ -136,6 +136,16 @@ class TestWaitForHealth:
             result = wait_for_health(port=30000, timeout=60, interval=0)
         assert result is True
 
+    def test_returns_false_when_process_exits_during_startup(self):
+        from orchestrator import wait_for_health
+        proc = MagicMock()
+        proc.poll.return_value = 1
+        proc.returncode = 1
+
+        result = wait_for_health(port=30000, timeout=60, interval=0, proc=proc)
+
+        assert result is False
+
 
 class TestStartSglang:
     def test_invokes_correct_command(self):

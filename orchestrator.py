@@ -138,11 +138,15 @@ def wait_for_health(
     port: int = SGLANG_PORT,
     timeout: int = SGLANG_STARTUP_TIMEOUT,
     interval: int = SGLANG_HEALTH_INTERVAL,
+    proc: Optional[subprocess.Popen] = None,
 ) -> bool:
-    """Poll GET /health until the server responds 200 or timeout expires."""
+    """Poll GET /health until the server responds 200, exits, or times out."""
     url = f"http://localhost:{port}/health"
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            print(f"[sglang] Process exited before health check passed (code={proc.returncode})")
+            return False
         try:
             r = requests.get(url, timeout=2)
             if r.status_code == 200:
@@ -415,11 +419,19 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
 
                 proc = start_sglang(model_id, tp, batch_size, port, prefill_size)
                 try:
-                    if not wait_for_health(port):
-                        print(f"[sweep] ERROR: SGLang failed to start within {SGLANG_STARTUP_TIMEOUT}s")
+                    if not wait_for_health(port, proc=proc):
+                        exit_code = proc.poll()
+                        if exit_code is None:
+                            error = f"SGLang failed to start within {SGLANG_STARTUP_TIMEOUT}s"
+                        else:
+                            error = (
+                                f"SGLang exited during startup with code {exit_code}; "
+                                "likely startup OOM or scheduler initialization failure"
+                            )
+                        print(f"[sweep] ERROR: {error}")
                         checkpoint.mark(
                             slug, batch_size, dataset, "failed",
-                            f"SGLang failed to start within {SGLANG_STARTUP_TIMEOUT}s",
+                            error,
                             model_id=model_id,
                         )
                         done += 1

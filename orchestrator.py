@@ -212,11 +212,11 @@ def run_benchmark(
 ) -> int:
     """Invoke the configured runner and return its exit code.
 
-    Default is MoE-CAP's `moe_cap.runner.openai_api_profile`, so MoE-CAP owns
-    request driving and metric output. Set BATCH_RUNNER=strict to use the
-    harness-owned serial-wave runner for debugging scheduler concurrency.
+    Default is the harness-owned strict-serial runner because this sweep needs
+    the client-side contract "batch_size = one request wave". Set
+    BATCH_RUNNER=upstream to use MoE-CAP's openai_api_profile runner.
     """
-    mode = os.environ.get("BATCH_RUNNER", "upstream").lower()
+    mode = os.environ.get("BATCH_RUNNER", "strict").lower()
     if mode == "strict":
         cmd = [
             sys.executable, "batch_runner.py",

@@ -79,15 +79,14 @@ Drop the `--enable-metrics` flag if you don't need the Tier-5 cross-check.
 
 | Situation | Runner |
 |---|---|
-| Standard S-MFU / S-MBU sweep | default MoE-CAP runner |
-| Debug exact client request waves | `BATCH_RUNNER=strict` |
-| Continuity with upstream MoE-CAP behavior | default MoE-CAP runner |
+| Qwen1.5 batch-scaling sweep | default strict-wave runner |
+| Continuity with upstream MoE-CAP behavior | `BATCH_RUNNER=upstream` |
 
 The upstream runner has two client-side pathologies that break the contract "batch size = server concurrency":
 - At `bs=1` it flood-fires all N prompts at once (`threshold = bs//2 = 0`).
 - At `bs ≥ 2` the next wave is launched when 50 % of the current wave completes, so peak concurrency is ~1.5 × bs.
 
-`batch_runner.py` sends N, awaits all N, then sends the next N — no overlap. It is a debugging runner, not the default measurement path.
+`batch_runner.py` sends N, awaits all N, then sends the next N — no overlap. It is the default for the current Qwen1.5 batch-scaling sweep.
 
 ## Profiling-only mode
 

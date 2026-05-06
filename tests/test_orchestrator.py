@@ -299,7 +299,7 @@ class TestRunBenchmark:
         assert "--output_dir" in cmd
         assert "/results/qwen3_30b/bs64/gsm8k/" in cmd
 
-    def test_defaults_to_moe_cap_runner(self, monkeypatch):
+    def test_defaults_to_strict_runner(self, monkeypatch):
         from orchestrator import run_benchmark
         monkeypatch.delenv("BATCH_RUNNER", raising=False)
         with patch("orchestrator.subprocess.run") as mock_run:
@@ -311,11 +311,11 @@ class TestRunBenchmark:
                 port=30000,
             )
         cmd = mock_run.call_args[0][0]
-        assert cmd[1:3] == ["-m", "moe_cap.runner.openai_api_profile"]
+        assert cmd[1] == "batch_runner.py"
 
-    def test_strict_runner_is_opt_in(self, monkeypatch):
+    def test_upstream_runner_is_opt_in(self, monkeypatch):
         from orchestrator import run_benchmark
-        monkeypatch.setenv("BATCH_RUNNER", "strict")
+        monkeypatch.setenv("BATCH_RUNNER", "upstream")
         with patch("orchestrator.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             run_benchmark(
@@ -325,7 +325,7 @@ class TestRunBenchmark:
                 port=30000,
             )
         cmd = mock_run.call_args[0][0]
-        assert cmd[1] == "batch_runner.py"
+        assert cmd[1:3] == ["-m", "moe_cap.runner.openai_api_profile"]
 
 
 # ─── Config Loading Tests ────────────────────────────────────────────────────

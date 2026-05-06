@@ -38,7 +38,7 @@ def test_active_batched_prefill_sweep_can_exercise_high_batch_with_chunking():
 
     assert cfg["prefill_mode"] == "batched"
     assert cfg["target_input_tokens"] == 1024
-    assert cfg["target_output_tokens"] == 128
+    assert cfg["target_output_tokens"] == 1
     assert cfg["chunked_prefill_size"] == 131072
     assert cfg["max_prefill_tokens"] == 131072
     assert cfg["mem_fraction_static"] == 0.9

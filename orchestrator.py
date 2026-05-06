@@ -115,6 +115,7 @@ def start_sglang(
     batch_size: int,
     port: int = SGLANG_PORT,
     chunked_prefill_size: Optional[int] = None,
+    max_prefill_tokens: Optional[int] = None,
 ) -> subprocess.Popen:
     """Launch the MoE-CAP SGLang server as a background subprocess."""
     cmd = [
@@ -130,6 +131,8 @@ def start_sglang(
         cmd += ["--disable-radix-cache"]
     if chunked_prefill_size is not None and chunked_prefill_size > 0:
         cmd += ["--chunked-prefill-size", str(chunked_prefill_size)]
+    if max_prefill_tokens is not None and max_prefill_tokens > 0:
+        cmd += ["--max-prefill-tokens", str(max_prefill_tokens)]
     print(f"[sglang] Starting: {' '.join(cmd)}")
     return subprocess.Popen(cmd)
 
@@ -293,6 +296,12 @@ def _get_explicit_chunked_prefill_size(model: dict, dataset_cfg: dict) -> Option
     return int(value) if value is not None else None
 
 
+def _get_explicit_max_prefill_tokens(model: dict, dataset_cfg: dict) -> Optional[int]:
+    """Return an explicit max-prefill-token override, if one was configured."""
+    value = dataset_cfg.get("max_prefill_tokens", model.get("max_prefill_tokens"))
+    return int(value) if value is not None else None
+
+
 def _effective_batch_sizes(batch_sizes: list, dataset_cfg: dict) -> list:
     """Return sweep batch sizes that are not skipped by max_batch_size."""
     max_bs = dataset_cfg.get("max_batch_size")
@@ -410,14 +419,20 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                     continue
 
                 prefill_size = _get_explicit_chunked_prefill_size(model, dataset_cfg)
+                max_prefill_tokens = _get_explicit_max_prefill_tokens(model, dataset_cfg)
 
                 sep = "=" * 60
                 print(f"\n{sep}")
                 print(f"[sweep] [{done+1}/{total}] {slug}  bs={batch_size}  {dataset}")
-                print(f"[sweep]   tp={tp}  chunked_prefill_size={prefill_size}")
+                print(
+                    f"[sweep]   tp={tp}  chunked_prefill_size={prefill_size} "
+                    f"max_prefill_tokens={max_prefill_tokens}"
+                )
                 print(sep)
 
-                proc = start_sglang(model_id, tp, batch_size, port, prefill_size)
+                proc = start_sglang(
+                    model_id, tp, batch_size, port, prefill_size, max_prefill_tokens
+                )
                 try:
                     if not wait_for_health(port, proc=proc):
                         exit_code = proc.poll()

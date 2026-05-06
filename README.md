@@ -69,21 +69,21 @@ models:
 
 - `tp` is set by necessity only — TP=1 unless the model won't fit on one GPU.
 - `gpu_memory_gb`, `max_context_tokens`, `weight_gb_per_gpu`, and `kv_bytes_per_token_per_gpu` are harness preflight guardrails. They make impossible batch cells fail before SGLang loads weights.
-- Optional `chunked_prefill_size` can be set per model or dataset when an operator needs an explicit SGLang scheduling override. It is omitted by default so MoE-CAP/SGLang own scheduling.
+- Optional `chunked_prefill_size` and `max_prefill_tokens` can be set per model or dataset when an operator needs explicit SGLang scheduling overrides.
 - SGLang radix/prefix caching is disabled by default with `--disable-radix-cache`; set `DISABLE_RADIX_CACHE=0` only for debugging cached-prefix behavior, not for S-MFU/S-MBU measurements.
 
 **Dropped in this sweep:** DeepSeek and Qwen3 variants. The active sweep is intentionally Qwen1.5-MoE only, using LongBench V2 prompts fixed to 1K input tokens and 1 output token.
 
 ## `configs/`
 
-Each active `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the runner. The current active config is `configs/batched_prefill_qwen1_5_moe.yaml`: `target_input_tokens: 1024`, `target_output_tokens: 1`, and `chunked_prefill_size: 32768`.
+Each active `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the runner. The current active config is `configs/batched_prefill_qwen1_5_moe.yaml`: `target_input_tokens: 1024`, `target_output_tokens: 1`, `chunked_prefill_size: 32768`, and `max_prefill_tokens: 32768`.
 
 ## How it works
 
 For each `(slug, batch_size, dataset)` triple not yet marked success in the checkpoint:
 
 1. **Pre-flight** — validates all HF model IDs up front (`orchestrator.py:validate_models`).
-2. **Start SGLang** — launches `moe_cap.systems.sglang` with `--enable-metrics` and `--disable-radix-cache`; polls `/health` until ready (25 min cap). `--chunked-prefill-size` is passed only when explicitly configured.
+2. **Start SGLang** — launches `moe_cap.systems.sglang` with `--enable-metrics` and `--disable-radix-cache`; polls `/health` until ready (25 min cap). `--chunked-prefill-size` and `--max-prefill-tokens` are passed only when explicitly configured.
 3. **Start Tier-5 poller** — `sglang_metrics.py` scrapes `/metrics` every `METRICS_POLL_INTERVAL` seconds and writes `sglang_metrics_bs<N>.jsonl` next to the results.
 4. **Run benchmark** — `batch_runner.py` by default for strict N-request waves, or `moe_cap.runner.openai_api_profile` when `BATCH_RUNNER=upstream`.
 5. **Checkpoint** — success or failure written to `$CHECKPOINT_PATH`.

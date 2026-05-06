@@ -174,6 +174,23 @@ class TestStartSglang:
         cmd = mock_popen.call_args[0][0]
         assert "--disable-radix-cache" not in cmd
 
+    def test_prefill_token_overrides_are_passed(self):
+        from orchestrator import start_sglang
+        with patch("orchestrator.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            start_sglang(
+                model_id="org/model",
+                tp=1,
+                batch_size=32,
+                port=30000,
+                chunked_prefill_size=32768,
+                max_prefill_tokens=32768,
+            )
+        cmd = mock_popen.call_args[0][0]
+        assert "--chunked-prefill-size" in cmd
+        assert "32768" in cmd
+        assert "--max-prefill-tokens" in cmd
+
 
 class TestKillSglang:
     def test_terminates_running_process(self):
@@ -441,7 +458,7 @@ class TestRunSweep:
         assert mock_start.call_count == 1
         # Verify tp passed through correctly
         call_kwargs = mock_start.call_args
-        # start_sglang(model_id, tp, batch_size, port, prefill_size)
+        # start_sglang(model_id, tp, batch_size, port, prefill_size, max_prefill_tokens)
         args = call_kwargs.args
         assert args[1] == 2  # tp=2
         assert ckpt.is_done("m_tp2", 1, "gsm8k")
@@ -541,3 +558,14 @@ class TestSweepConfigValidation:
             {"chunked_prefill_size": 65536}, {"chunked_prefill_size": 32768}
         ) == 32768
         assert _get_explicit_chunked_prefill_size({}, {}) is None
+
+    def test_explicit_max_prefill_tokens_can_be_set_on_model_or_dataset(self):
+        from orchestrator import _get_explicit_max_prefill_tokens
+
+        assert _get_explicit_max_prefill_tokens(
+            {"max_prefill_tokens": 65536}, {}
+        ) == 65536
+        assert _get_explicit_max_prefill_tokens(
+            {"max_prefill_tokens": 65536}, {"max_prefill_tokens": 32768}
+        ) == 32768
+        assert _get_explicit_max_prefill_tokens({}, {}) is None

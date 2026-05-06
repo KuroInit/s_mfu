@@ -191,6 +191,21 @@ class TestStartSglang:
         assert "32768" in cmd
         assert "--max-prefill-tokens" in cmd
 
+    def test_mem_fraction_static_override_is_passed(self):
+        from orchestrator import start_sglang
+        with patch("orchestrator.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            start_sglang(
+                model_id="org/model",
+                tp=1,
+                batch_size=32,
+                port=30000,
+                mem_fraction_static=0.9,
+            )
+        cmd = mock_popen.call_args[0][0]
+        assert "--mem-fraction-static" in cmd
+        assert "0.9" in cmd
+
 
 class TestKillSglang:
     def test_terminates_running_process(self):

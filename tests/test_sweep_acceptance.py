@@ -39,11 +39,11 @@ def test_active_batched_prefill_sweep_can_exercise_high_batch_with_chunking():
     assert cfg["prefill_mode"] == "batched"
     assert cfg["target_input_tokens"] == 1024
     assert cfg["target_output_tokens"] == 1
-    assert cfg["chunked_prefill_size"] == 32768
-    assert cfg["max_prefill_tokens"] == 32768
-    assert 32 * cfg["target_input_tokens"] <= cfg["chunked_prefill_size"]
-    assert 32 * cfg["target_input_tokens"] <= cfg["max_prefill_tokens"]
-    assert 128 * cfg["target_input_tokens"] > cfg["chunked_prefill_size"]
+    assert cfg["chunked_prefill_size"] == 150000
+    assert cfg["max_prefill_tokens"] == 150000
+    # Prompts tokenize to roughly 1,050 tokens, so keep slack above 128 * 1K.
+    assert 128 * cfg["target_input_tokens"] <= cfg["chunked_prefill_size"]
+    assert 128 * cfg["target_input_tokens"] <= cfg["max_prefill_tokens"]
 
 
 def test_active_sweep_batch_cells_fit_h100_nvl_memory_estimate():

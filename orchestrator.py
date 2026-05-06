@@ -116,6 +116,7 @@ def start_sglang(
     port: int = SGLANG_PORT,
     chunked_prefill_size: Optional[int] = None,
     max_prefill_tokens: Optional[int] = None,
+    mem_fraction_static: Optional[float] = None,
 ) -> subprocess.Popen:
     """Launch the MoE-CAP SGLang server as a background subprocess."""
     cmd = [
@@ -133,6 +134,8 @@ def start_sglang(
         cmd += ["--chunked-prefill-size", str(chunked_prefill_size)]
     if max_prefill_tokens is not None and max_prefill_tokens > 0:
         cmd += ["--max-prefill-tokens", str(max_prefill_tokens)]
+    if mem_fraction_static is not None and mem_fraction_static > 0:
+        cmd += ["--mem-fraction-static", str(mem_fraction_static)]
     print(f"[sglang] Starting: {' '.join(cmd)}")
     return subprocess.Popen(cmd)
 
@@ -302,6 +305,12 @@ def _get_explicit_max_prefill_tokens(model: dict, dataset_cfg: dict) -> Optional
     return int(value) if value is not None else None
 
 
+def _get_explicit_mem_fraction_static(model: dict, dataset_cfg: dict) -> Optional[float]:
+    """Return an explicit SGLang static-memory fraction, if one was configured."""
+    value = dataset_cfg.get("mem_fraction_static", model.get("mem_fraction_static"))
+    return float(value) if value is not None else None
+
+
 def _effective_batch_sizes(batch_sizes: list, dataset_cfg: dict) -> list:
     """Return sweep batch sizes that are not skipped by max_batch_size."""
     max_bs = dataset_cfg.get("max_batch_size")
@@ -420,18 +429,26 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
 
                 prefill_size = _get_explicit_chunked_prefill_size(model, dataset_cfg)
                 max_prefill_tokens = _get_explicit_max_prefill_tokens(model, dataset_cfg)
+                mem_fraction_static = _get_explicit_mem_fraction_static(model, dataset_cfg)
 
                 sep = "=" * 60
                 print(f"\n{sep}")
                 print(f"[sweep] [{done+1}/{total}] {slug}  bs={batch_size}  {dataset}")
                 print(
                     f"[sweep]   tp={tp}  chunked_prefill_size={prefill_size} "
-                    f"max_prefill_tokens={max_prefill_tokens}"
+                    f"max_prefill_tokens={max_prefill_tokens} "
+                    f"mem_fraction_static={mem_fraction_static}"
                 )
                 print(sep)
 
                 proc = start_sglang(
-                    model_id, tp, batch_size, port, prefill_size, max_prefill_tokens
+                    model_id,
+                    tp,
+                    batch_size,
+                    port,
+                    prefill_size,
+                    max_prefill_tokens,
+                    mem_fraction_static,
                 )
                 try:
                     if not wait_for_health(port, proc=proc):

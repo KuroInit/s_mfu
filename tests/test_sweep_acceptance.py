@@ -31,14 +31,14 @@ def test_qwen1_5_uses_75_percent_context_window():
     assert cfg["target_input_tokens"] + cfg["target_output_tokens"] <= 32768
 
 
-def test_active_qwen3_30b_batched_prefill_sweep_can_exercise_high_batch():
+def test_active_batched_prefill_sweep_can_exercise_high_batch_with_chunking():
     cfg = _load_yaml("configs/batched_prefill_qwen3_30b.yaml")
 
     assert cfg["prefill_mode"] == "batched"
     assert cfg["target_input_tokens"] == 1024
     assert cfg["target_output_tokens"] == 1
-    assert cfg["chunked_prefill_size"] == 32768
-    assert 32 * cfg["target_input_tokens"] <= cfg["chunked_prefill_size"]
+    assert cfg["chunked_prefill_size"] == 16384
+    assert 16 * cfg["target_input_tokens"] <= cfg["chunked_prefill_size"]
     assert 128 * cfg["target_input_tokens"] > cfg["chunked_prefill_size"]
 
 

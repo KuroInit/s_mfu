@@ -37,6 +37,7 @@ def test_active_qwen3_30b_batched_prefill_sweep_can_exercise_high_batch():
     assert cfg["prefill_mode"] == "batched"
     assert cfg["target_input_tokens"] == 1024
     assert cfg["target_output_tokens"] == 1
+    assert cfg["chunked_prefill_size"] >= 128 * cfg["target_input_tokens"]
 
 
 def test_active_sweep_batch_cells_fit_h100_nvl_memory_estimate():

@@ -1,7 +1,7 @@
 # Batched prefill: short 1K input × N concurrent requests packed into one
-# scheduling step. Tests REAL batched-prefill efficiency vs Run 2 which only
-# measured single-prefill efficiency. Up to bs=32 fits in the 32K chunk cap;
-# bs=64/128 partially batched (multiple chunks).
+# scheduling step. Tests REAL batched-prefill efficiency. The chunk cap is set
+# high enough for bs=128 x 1024 tokens so high-batch cells do not all collapse
+# into the same ~8K-token physical prefill chunk.
 dataset_names: ["longbench_v2"]
 metrics: []
 model_id: Qwen/Qwen1.5-MoE-A2.7B-Chat
@@ -12,4 +12,5 @@ num_samples: 200
 fixed_length_mode: true
 target_input_tokens: 1024
 target_output_tokens: 1
+chunked_prefill_size: 131072
 prefill_mode: batched

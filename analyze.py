@@ -450,6 +450,24 @@ def _copy_run_metadata(metrics: dict, metadata: dict, dataset_cfg: dict) -> None
         metrics["disable_radix_cache"] = disable_radix
 
 
+def _aggregate_metric_values(values: list):
+    """Average numeric duplicate cells; carry stable metadata values through."""
+    numeric = [
+        v for v in values
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    ]
+    if len(numeric) == len(values):
+        return sum(numeric) / len(numeric)
+
+    non_empty = [v for v in values if v not in ("", None)]
+    if not non_empty:
+        return ""
+    first = non_empty[0]
+    if all(v == first for v in non_empty):
+        return first
+    return ";".join(str(v) for v in dict.fromkeys(non_empty))
+
+
 def aggregate_results(raw: list) -> dict:
     """Average metrics across datasets for each (slug, batch_size) pair.
 
@@ -469,7 +487,7 @@ def aggregate_results(raw: list) -> dict:
     for slug, bs_data in accum.items():
         result[slug] = {}
         for bs, kdata in bs_data.items():
-            result[slug][bs] = {k: sum(v) / len(v) for k, v in kdata.items()}
+            result[slug][bs] = {k: _aggregate_metric_values(v) for k, v in kdata.items()}
     return result
 
 
@@ -538,7 +556,9 @@ def aggregate_by_dataset(raw: list) -> dict:
         for slug, bs_data in slug_data.items():
             result[dataset][slug] = {}
             for bs, kdata in bs_data.items():
-                result[dataset][slug][bs] = {k: sum(v) / len(v) for k, v in kdata.items()}
+                result[dataset][slug][bs] = {
+                    k: _aggregate_metric_values(v) for k, v in kdata.items()
+                }
     return result
 
 

@@ -461,6 +461,20 @@ def test_aggregate_by_dataset_averages_duplicate_cells():
     assert agg["longbench_v2"]["model_a"][1]["prefill_smfu"] == pytest.approx(50.0)
 
 
+def test_aggregate_by_dataset_keeps_metadata_strings():
+    from analyze import aggregate_by_dataset
+    raw = [
+        ("model_a", 1, "longbench_v2",
+         {"prefill_smfu": 40.0, "runner_mode": "strict_barrier_waves_v2"}),
+        ("model_a", 1, "longbench_v2",
+         {"prefill_smfu": 60.0, "runner_mode": "strict_barrier_waves_v2"}),
+    ]
+    agg = aggregate_by_dataset(raw)
+    cell = agg["longbench_v2"]["model_a"][1]
+    assert cell["prefill_smfu"] == pytest.approx(50.0)
+    assert cell["runner_mode"] == "strict_barrier_waves_v2"
+
+
 # ── plot_metric_per_dataset ───────────────────────────────────────────────────
 
 def test_plot_metric_per_dataset_saves_file(tmp_path):

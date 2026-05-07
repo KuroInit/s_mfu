@@ -4,7 +4,7 @@
 # changes the physical prefill batch that SGLang packs into a forward pass.
 # The longbench_v2 configs use one huge prompt per request, which tends to
 # saturate at low concurrency and hides the expected rise/plateau/collapse.
-batch_sizes: [2,4,8,16,32,64,128]
+batch_sizes: [2,4,8,16,32,64,128, 256, 512]
 datasets: [batched_prefill]
 port: 30000
 gpu_memory_gb: 94

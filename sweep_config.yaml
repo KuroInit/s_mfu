@@ -16,3 +16,17 @@ models:
     max_context_tokens: 32768
     weight_gb_per_gpu: 28.6
     kv_bytes_per_token_per_gpu: 12288
+
+  - id: Qwen/Qwen3-30B-A3B
+    tp: 1
+    slug: qwen3_30b
+    max_context_tokens: 40960
+    weight_gb_per_gpu: 60.0
+    kv_bytes_per_token_per_gpu: 98304
+
+  - id: Qwen/Qwen3-Next-80B-A3B-Instruct
+    tp: 2
+    slug: qwen3_next_80b
+    max_context_tokens: 262144
+    weight_gb_per_gpu: 74.3
+    kv_bytes_per_token_per_gpu: 49152

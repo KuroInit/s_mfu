@@ -47,10 +47,10 @@ docker compose up
 
 ## `sweep_config.yaml`
 
-Current Qwen1.5-MoE batched-prefill scope:
+Current batched-prefill scope:
 
 ```yaml
-batch_sizes: [2, 4, 8, 16, 32, 64, 128]
+batch_sizes: [2, 4, 8, 16, 32, 64, 128, 256, 512]
 datasets: [batched_prefill]
 port: 30000
 gpu_memory_gb: 94
@@ -62,18 +62,36 @@ models:
     max_context_tokens: 32768
     weight_gb_per_gpu: 28.6
     kv_bytes_per_token_per_gpu: 12288
+  - id: Qwen/Qwen3-30B-A3B
+    tp: 1
+    slug: qwen3_30b
+    max_context_tokens: 40960
+    weight_gb_per_gpu: 60.0
+    kv_bytes_per_token_per_gpu: 98304
+  - id: Qwen/Qwen3-Next-80B-A3B-Instruct
+    tp: 2
+    slug: qwen3_next_80b
+    max_context_tokens: 262144
+    weight_gb_per_gpu: 74.3
+    kv_bytes_per_token_per_gpu: 49152
 ```
 
 - `tp` is set by necessity only — TP=1 unless the model won't fit on one GPU.
 - `gpu_memory_gb`, `max_context_tokens`, `weight_gb_per_gpu`, and `kv_bytes_per_token_per_gpu` are harness preflight guardrails. They make impossible batch cells fail before SGLang loads weights.
+- Qwen3-30B and Qwen3-Next-80B are capped at `max_batch_size: 256` in their active batched-prefill configs, so only Qwen1.5-MoE attempts `bs=512`.
 - Optional `chunked_prefill_size` and `max_prefill_tokens` can be set per model or dataset when an operator needs explicit SGLang scheduling overrides.
 - SGLang radix/prefix caching is disabled by default with `--disable-radix-cache`; set `DISABLE_RADIX_CACHE=0` only for debugging cached-prefix behavior, not for S-MFU/S-MBU measurements.
 
-**Dropped in this sweep:** DeepSeek and Qwen3 variants. The active sweep is intentionally Qwen1.5-MoE only, using LongBench V2 prompts fixed to 1K input tokens and 1 output token.
+**Dropped in this sweep:** DeepSeek. The active sweep uses Qwen MoE models with LongBench V2 prompts fixed to 1K input tokens and 1 output token.
 
 ## `configs/`
 
-Each active `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the runner. The current active config is `configs/batched_prefill_qwen1_5_moe.yaml`: `target_input_tokens: 1024`, `target_output_tokens: 1`, `chunked_prefill_size: 32768`, and `max_prefill_tokens: 32768`.
+Each active `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the runner.
+
+Active batched-prefill configs use `target_input_tokens: 1024` and
+`target_output_tokens: 1`. The Qwen3 configs use smaller explicit
+`chunked_prefill_size` values and `max_batch_size: 256` to stay within the H100
+NVL memory guardrail.
 
 ## How it works
 
@@ -109,6 +127,12 @@ python analyze.py $RESULTS_DIR
 ```
 
 Loads every leaf directory, re-derives S-MFU / S-MBU / tokens-per-sec using `moe_cap.utils.continuous_batching_utils._calculate_continuous_metrics`, and reconstructs raw TFLOPS from MoE-CAP S-MFU and MoE-CAP peak FLOPS.
+
+The vendored MoE-CAP checkout includes a local fix for packed prefill records:
+when SGLang provides `per_req_info`, prefill throughput is computed from the
+packed forward record's `seq_lens_sum / latency` instead of averaging
+per-request token counts over the shared forward latency. Keep MoE-CAP installed
+editable from this checkout (`pip install -e ./MoE-CAP`) before analyzing runs.
 
 If old result files recorded `"Unknown"` as the record-level GPU type, `analyze.py` falls back to metadata and also accepts `ANALYZE_GPU_TYPE=NVIDIA-H100-NVL-94GB` as an explicit override.
 

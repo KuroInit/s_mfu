@@ -10,7 +10,11 @@ def _load_yaml(path: str):
 def test_active_sweep_requests_fit_model_context_windows():
     sweep = _load_yaml("sweep_config.yaml")
 
-    assert [model["slug"] for model in sweep["models"]] == ["qwen1_5_moe"]
+    assert [model["slug"] for model in sweep["models"]] == [
+        "qwen1_5_moe",
+        "qwen3_30b",
+        "qwen3_next_80b",
+    ]
 
     for model in sweep["models"]:
         for dataset in sweep["datasets"]:

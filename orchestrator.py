@@ -17,8 +17,6 @@ from typing import Optional
 from huggingface_hub import model_info
 from huggingface_hub.utils import RepositoryNotFoundError
 
-from sglang_metrics import SGLangMetricsPoller
-
 # ─── Configuration ───────────────────────────────────────────────────────────
 
 SWEEP_CONFIG_PATH = os.environ.get("SWEEP_CONFIG", "sweep_config.yaml")
@@ -29,7 +27,6 @@ SGLANG_STARTUP_TIMEOUT = 1500  # 25 minutes — covers slow weight loads + warmu
 SGLANG_HEALTH_INTERVAL = 5     # seconds between health polls
 SGLANG_SHUTDOWN_GRACE = 30     # seconds before SIGKILL
 PORT_FREE_TIMEOUT = 60         # seconds to wait for port to clear
-METRICS_POLL_INTERVAL = 1.0    # seconds; set METRICS_POLL_INTERVAL=0 to disable Tier 5
 
 
 def _disable_radix_cache_enabled() -> bool:
@@ -216,44 +213,15 @@ def run_benchmark(
     output_dir: str,
     port: int = SGLANG_PORT,
 ) -> int:
-    """Invoke the configured runner and return its exit code.
-
-    Default is MoE-CAP's upstream runner in auto batching mode, matching the
-    paper's adaptive continuous-batching setup. Set BATCH_RUNNER=strict for the
-    harness-owned fixed-wave runner, or BATCH_RUNNER=upstream to pass an
-    explicit --server-batch-size to MoE-CAP's runner.
-    """
-    mode = os.environ.get("BATCH_RUNNER", "upstream_auto").lower()
-    if mode == "strict":
-        cmd = [
-            sys.executable, "batch_runner.py",
-            "--config-file", config_file,
-            "--api-url", f"http://localhost:{port}/v1/completions",
-            "--backend", "sglang",
-            "--server-batch-size", str(batch_size),
-            "--output_dir", output_dir,
-        ]
-    elif mode == "upstream":
-        cmd = [
-            sys.executable, "-m", "moe_cap.runner.openai_api_profile",
-            "--config-file", config_file,
-            "--api-url", f"http://localhost:{port}/v1/completions",
-            "--backend", "sglang",
-            "--server-batch-size", str(batch_size),
-            "--output_dir", output_dir,
-        ]
-    elif mode in {"upstream_auto", "auto"}:
-        cmd = [
-            sys.executable, "-m", "moe_cap.runner.openai_api_profile",
-            "--config-file", config_file,
-            "--api-url", f"http://localhost:{port}/v1/completions",
-            "--backend", "sglang",
-            "--output_dir", output_dir,
-        ]
-    else:
-        raise ValueError(
-            f"Unknown BATCH_RUNNER={mode!r}; expected strict, upstream, or upstream_auto"
-        )
+    """Invoke MoE-CAP's OpenAI API profiler and return its exit code."""
+    cmd = [
+        sys.executable, "-m", "moe_cap.runner.openai_api_profile",
+        "--config-file", config_file,
+        "--api-url", f"http://localhost:{port}/v1/completions",
+        "--backend", "sglang",
+        "--server-batch-size", str(batch_size),
+        "--output_dir", output_dir,
+    ]
     print(f"[runner] {' '.join(cmd)}")
     result = subprocess.run(cmd, check=False)
     return result.returncode
@@ -482,26 +450,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                         done += 1
                         continue
 
-                    # Tier 5: server-side throughput diagnostic + serial-wave proof.
-                    poller = None
-                    interval = float(os.environ.get("METRICS_POLL_INTERVAL", METRICS_POLL_INTERVAL))
-                    if interval > 0:
-                        metrics_path = os.path.join(
-                            output_dir, f"sglang_metrics_bs{batch_size}.jsonl"
-                        )
-                        poller = SGLangMetricsPoller(
-                            base_url=f"http://localhost:{port}",
-                            output_path=metrics_path,
-                            interval=interval,
-                            label=f"{slug}_bs{batch_size}_{dataset}",
-                        )
-                        poller.start()
-
-                    try:
-                        rc = run_benchmark(config_file, batch_size, output_dir, port)
-                    finally:
-                        if poller is not None:
-                            poller.stop()
+                    rc = run_benchmark(config_file, batch_size, output_dir, port)
 
                     if rc == 0:
                         persist_moe_cap_server_records(model_id, output_dir, dataset)

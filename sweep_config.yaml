@@ -1,4 +1,4 @@
-# Batched-prefill roofline/collapse test.
+# Batched-prefill MoE-CAP metric sweep.
 #
 # Use the batched_prefill_* configs instead of longbench_v2_* so the sweep
 # changes the physical prefill batch that SGLang packs into a forward pass.

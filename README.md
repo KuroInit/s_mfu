@@ -2,7 +2,7 @@
 
 Sweep harness for [MoE-CAP](https://github.com/Auto-CAP/MoE-CAP) benchmarks across multiple models, batch sizes, and datasets.
 
-MoE-CAP evaluates sparse Mixture-of-Experts inference along **Cost**, **Accuracy**, and **Performance**. This repo provides the orchestration layer: it manages the SGLang server lifecycle, drives a benchmark runner for each `(model × batch_size × dataset)` triple, scrapes server-side metrics as ground truth, checkpoints progress, and produces S-MFU / S-MBU plots.
+MoE-CAP evaluates sparse Mixture-of-Experts inference along **Cost**, **Accuracy**, and **Performance**. This repo provides the orchestration layer: it manages the SGLang server lifecycle, invokes MoE-CAP's runner for each `(model × batch_size × dataset)` triple, checkpoints progress, and plots MoE-CAP-derived S-MFU / S-MBU metrics.
 
 ## Prerequisites
 
@@ -41,9 +41,6 @@ docker compose up
 - `SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR` — expert-activation dumps (default: `$RESULTS_DIR/expert_records`)
 
 **Runtime tuning**
-- `BATCH_RUNNER=upstream` — use MoE-CAP's `openai_api_profile` runner instead of the default strict-wave runner.
-- `BATCH_RUNNER_REQUEST_TIMEOUT` — per-request timeout in seconds (default: 3600).
-- `METRICS_POLL_INTERVAL` — Tier-5 `/metrics` poll period in seconds (default: 1.0; `0` disables).
 - `MOE_CAP_PROFILING_ONLY=1` — skip the per-forward-pass expert distribution recorder for faster runs (no expert-activation data).
 - `SKIP_INSTALL=1` — skip pip installs in `run_sweep.sh`.
 - `ANALYZE_ONLY=1` — skip the sweep and run `analyze.py` only.
@@ -84,22 +81,12 @@ For each `(slug, batch_size, dataset)` triple not yet marked success in the chec
 
 1. **Pre-flight** — validates all HF model IDs up front (`orchestrator.py:validate_models`).
 2. **Start SGLang** — launches `moe_cap.systems.sglang` with `--enable-metrics` and `--disable-radix-cache`; polls `/health` until ready (25 min cap). `--chunked-prefill-size` and `--max-prefill-tokens` are passed only when explicitly configured.
-3. **Start Tier-5 poller** — `sglang_metrics.py` scrapes `/metrics` every `METRICS_POLL_INTERVAL` seconds and writes `sglang_metrics_bs<N>.jsonl` next to the results.
-4. **Run benchmark** — `batch_runner.py` by default for strict N-request waves, or `moe_cap.runner.openai_api_profile` when `BATCH_RUNNER=upstream`.
+3. **Run benchmark** — invokes `moe_cap.runner.openai_api_profile` with the configured `--server-batch-size`.
+4. **Preserve server records** — copies MoE-CAP/SGLang expert-distribution records next to the result files so analysis can use MoE-CAP's continuous-batching metric function accurately.
 5. **Checkpoint** — success or failure written to `$CHECKPOINT_PATH`.
 6. **Shutdown** — SIGTERM → wait → SIGKILL; wait for the port to clear before the next triple.
 
 SGLang is restarted per triple so detailed_results and expert_records can't bleed across datasets (Audit Finding #21).
-
-## Runners
-
-**Default** (`batch_runner.py`): sends N, awaits all N, then sends the next N. Reuses MoE-CAP's loaders and output schema.
-
-**Upstream** (`BATCH_RUNNER=upstream`): MoE-CAP's `openai_api_profile` runner. Use this when checking continuity with upstream behavior.
-
-The upstream runner has two known client-side pathologies if you need the client-side contract "batch size = exact request wave size":
-- at `bs=1`, all N prompts are fired concurrently (threshold `bs // 2 == 0`);
-- at `bs ≥ 2`, the next wave launches when half the current wave completes, so peak concurrency is ~1.5 × bs.
 
 ## Results layout
 
@@ -108,10 +95,11 @@ $RESULTS_DIR/
 ├── checkpoint.yaml
 ├── expert_records/<model_id>/expert_distribution_record.jsonl
 └── <slug>/bs<N>/<dataset>/
-    ├── sglang_metrics_bs<N>.jsonl          # Tier-5 /metrics snapshots
     └── <org>/<model_name>/
         ├── metadata_<dataset>_<ts>.json
-        └── detailed_results_<dataset>_<ts>.jsonl
+        ├── metrics_<dataset>_<ts>.json
+        ├── detailed_results_<dataset>_<ts>.jsonl
+        └── server_records_<dataset>_<ts>.jsonl
 ```
 
 ## Analysis
@@ -120,12 +108,12 @@ $RESULTS_DIR/
 python analyze.py $RESULTS_DIR
 ```
 
-Loads every leaf directory, re-derives per-prefill S-MFU / S-MBU / tokens-per-sec using `moe_cap.utils.continuous_batching_utils._calculate_continuous_metrics`, reconstructs raw TFLOPS from MoE-CAP S-MFU and MoE-CAP peak FLOPS, and cross-checks against Tier-5 server counters (`prompt_tokens_total`, `num_running_reqs`, `cache_hit_rate`) — warning if client/server throughputs diverge > 5 %, if `peak_running_reqs > batch_size + 1` (serial-wave contract broken), or if the prefix cache shows contamination.
+Loads every leaf directory, re-derives S-MFU / S-MBU / tokens-per-sec using `moe_cap.utils.continuous_batching_utils._calculate_continuous_metrics`, and reconstructs raw TFLOPS from MoE-CAP S-MFU and MoE-CAP peak FLOPS.
 
 If old result files recorded `"Unknown"` as the record-level GPU type, `analyze.py` falls back to metadata and also accepts `ANALYZE_GPU_TYPE=NVIDIA-H100-NVL-94GB` as an explicit override.
 
 Outputs (to `$RESULTS_DIR/`):
-- `raw_values.csv` — CSV dump of every metric per `(dataset, slug, bs)`, including MoE-CAP throughput and the harness aggregate throughput cross-check.
+- `raw_values.csv` — CSV dump of every MoE-CAP-derived metric per `(dataset, slug, bs)`.
 - `smfu_<dataset>.png`, `smbu_<dataset>.png`, `raw_flops_<dataset>.png`, `tokens_per_sec_<dataset>.png` — one combined figure per dataset with one line per model.
 - `qwen3_next_80b_legacy_{smfu,smbu,raw_flops}_<dataset>.png` — dedicated current-path vs legacy-Qwen3-path comparison for the 80B model.
 

@@ -4,7 +4,6 @@
 import glob
 import csv
 import json
-import math
 import os
 import sys
 import warnings
@@ -21,14 +20,7 @@ import yaml
 from moe_cap.configs import CAPConfig
 from moe_cap.model_loader import HFModelInfoRetriever
 from moe_cap.utils.continuous_batching_utils import _calculate_continuous_metrics
-from moe_cap.utils.hardware_utils import get_peak_bw, get_peak_flops
-
-from sglang_metrics import (
-    load_snapshots,
-    server_tokens_per_sec,
-    peak_running_reqs,
-    peak_cache_hit_rate,
-)
+from moe_cap.utils.hardware_utils import get_peak_flops
 
 UNKNOWN_GPU_VALUES = {"", "unknown", "none", "null"}
 
@@ -164,205 +156,11 @@ def _run_metrics(records, model_name, precision_str, num_gpus, gpu_raw_type, cap
         return None
 
 
-def _aggregate_raw_throughput(records: list) -> dict:
-    """Sum tokens and time across prefill records. First-order primitives.
-
-    Returns {total_tokens, total_latency, tokens_per_sec}, or zeros if empty.
-    This is *raw* in the strict sense — only division of two measured quantities.
-    """
-    total_tokens = sum(r.get("seq_lens_sum", 0) for r in records)
-    total_latency = sum(r.get("latency", 0) for r in records)
-    tps = (total_tokens / total_latency) if total_latency > 0 else 0
-    return {
-        "total_tokens":  total_tokens,
-        "total_latency": total_latency,
-        "tokens_per_sec": tps,
-    }
-
-
-def _prefill_shape_metrics(records: list) -> dict:
-    """Summarize the actual prefill forward-pass shape recorded by SGLang.
-
-    For a batched prefill roofline, the relevant X coordinate is the amount of
-    prefill work in the forward passes SGLang actually executed, not the sweep
-    label. `seq_lens_sum` is already the packed B*S token mass for each prefill
-    step, so a token-weighted average gives one representative roofline point
-    for the run while de-emphasizing the final partial wave.
-    """
-    if not records:
-        return {}
-
-    batch_sizes = []
-    seq_sums = []
-    for r in records:
-        try:
-            rb = int(r.get("batch_size") or 0)
-            seq = int(r.get("seq_lens_sum") or 0)
-        except (TypeError, ValueError):
-            continue
-        if rb > 0:
-            batch_sizes.append(rb)
-        if seq > 0:
-            seq_sums.append(seq)
-
-    metrics = {"prefill_record_count": len(records)}
-    if batch_sizes:
-        metrics["prefill_actual_max_batch_size"] = max(batch_sizes)
-        metrics["prefill_actual_avg_batch_size"] = sum(batch_sizes) / len(batch_sizes)
-    if seq_sums:
-        total_seq = sum(seq_sums)
-        metrics["prefill_actual_max_seq_lens_sum"] = max(seq_sums)
-        metrics["prefill_actual_avg_seq_lens_sum"] = total_seq / len(seq_sums)
-        metrics["prefill_actual_token_weighted_seq_lens_sum"] = (
-            sum(seq * seq for seq in seq_sums) / total_seq
-        )
-    return metrics
-
-
-def _add_server_adjusted_tflops(metrics: dict, server_tps: float) -> None:
-    """Add /metrics-scaled TFLOPS as diagnostics without touching MoE-CAP values."""
-    client_tps = metrics.get("prefill_tokens_per_sec", 0)
-    raw_tflops = metrics.get("prefill_raw_tflops", 0)
-    if not server_tps or not client_tps or not raw_tflops:
-        return
-
-    scale = server_tps / client_tps
-    metrics["prefill_server_adjusted_tflops_total"] = raw_tflops * scale
-
-    legacy_tflops = metrics.get("prefill_raw_tflops_legacy")
-    if legacy_tflops is not None:
-        metrics["prefill_server_adjusted_tflops_total_legacy"] = legacy_tflops * scale
-
-
-def _finalize_roofline_metrics(metrics: dict, batch_size: int, target_input_tokens: Optional[int]) -> None:
-    """Add roofline coordinates and MFU/MBU readings to a metrics dict.
-
-    Roofline X uses the recorded prefill forward-pass token mass when present:
-    AI ~= actual seq_lens_sum. This is the physical B*S that SGLang packed,
-    not just the sweep label. For older records without shape data, it falls
-    back to batch_size * target_input_tokens.
-
-    Roofline Y is achieved dense-equivalent TFLOPS/s per GPU from MoE-CAP
-    S-MFU. Server /metrics diagnostics are kept under server_adjusted keys and
-    never replace these MoE-CAP roofline coordinates.
-    """
-    if not target_input_tokens or target_input_tokens <= 0:
-        return
-
-    peak_dense = metrics.get("peak_dense_tflops_per_gpu", 0)
-    peak_bw = metrics.get("peak_memory_tbps_per_gpu", 0)
-    num_gpus = metrics.get("num_gpus", 1)
-    if not peak_dense or not peak_bw or not num_gpus:
-        return
-
-    actual_intensity = metrics.get("prefill_actual_token_weighted_seq_lens_sum", 0)
-    intensity = actual_intensity if actual_intensity and actual_intensity > 0 else (
-        batch_size * target_input_tokens
-    )
-    achieved = metrics.get("prefill_raw_tflops", 0)
-
-    achieved_per_gpu = achieved / num_gpus
-    achieved_bw = (achieved_per_gpu / intensity) if intensity > 0 else 0
-
-    metrics["prefill_target_input_tokens"] = target_input_tokens
-    metrics["prefill_arithmetic_intensity"] = intensity
-    metrics["prefill_intended_arithmetic_intensity"] = batch_size * target_input_tokens
-    metrics["prefill_roofline_tflops_total"] = achieved
-    metrics["prefill_roofline_tflops_per_gpu"] = achieved_per_gpu
-    metrics["prefill_roofline_smfu"] = (achieved_per_gpu / peak_dense * 100) if peak_dense else 0
-    metrics["prefill_roofline_bandwidth_tbps"] = achieved_bw
-    metrics["prefill_roofline_smbu"] = (achieved_bw / peak_bw * 100) if peak_bw else 0
-
-    server_adjusted = metrics.get("prefill_server_adjusted_tflops_total")
-    if server_adjusted is not None:
-        server_per_gpu = server_adjusted / num_gpus
-        server_bw = server_per_gpu / intensity
-        metrics["prefill_server_adjusted_tflops_per_gpu"] = server_per_gpu
-        metrics["prefill_server_adjusted_smfu"] = (
-            server_per_gpu / peak_dense * 100 if peak_dense else 0
-        )
-        metrics["prefill_server_adjusted_bandwidth_tbps"] = server_bw
-        metrics["prefill_server_adjusted_smbu"] = (
-            server_bw / peak_bw * 100 if peak_bw else 0
-        )
-
-    legacy = metrics.get("prefill_raw_tflops_legacy")
-    if legacy is not None:
-        legacy_per_gpu = legacy / num_gpus
-        legacy_bw = legacy_per_gpu / intensity
-        metrics["prefill_roofline_tflops_total_legacy"] = legacy
-        metrics["prefill_roofline_tflops_per_gpu_legacy"] = legacy_per_gpu
-        metrics["prefill_roofline_smfu_legacy"] = (
-            legacy_per_gpu / peak_dense * 100 if peak_dense else 0
-        )
-        metrics["prefill_roofline_bandwidth_tbps_legacy"] = legacy_bw
-        metrics["prefill_roofline_smbu_legacy"] = (
-            legacy_bw / peak_bw * 100 if peak_bw else 0
-        )
-
-    server_legacy = metrics.get("prefill_server_adjusted_tflops_total_legacy")
-    if server_legacy is not None:
-        server_legacy_per_gpu = server_legacy / num_gpus
-        server_legacy_bw = server_legacy_per_gpu / intensity
-        metrics["prefill_server_adjusted_tflops_per_gpu_legacy"] = server_legacy_per_gpu
-        metrics["prefill_server_adjusted_smfu_legacy"] = (
-            server_legacy_per_gpu / peak_dense * 100 if peak_dense else 0
-        )
-        metrics["prefill_server_adjusted_bandwidth_tbps_legacy"] = server_legacy_bw
-        metrics["prefill_server_adjusted_smbu_legacy"] = (
-            server_legacy_bw / peak_bw * 100 if peak_bw else 0
-        )
-
-
-def _merge_tier5(metrics: dict, snaps: list, batch_size: int) -> None:
-    """Augment metrics dict with server-side cross-checks from /metrics snapshots.
-
-    Adds:
-      - server_tokens_per_sec: Δprompt_tokens_total / Δt (monotonic counter).
-      - client_vs_server_delta_pct: relative divergence vs client aggregate.
-      - peak_running_reqs: max num_running_reqs observed.
-      - peak_cache_hit_rate: max cache_hit_rate observed.
-    Emits a warning if the client/server throughputs disagree by >5 %, or if
-    peak_running_reqs exceeds batch_size+1 (serial-wave contract violated),
-    or if cache_hit_rate is materially non-zero (contamination).
-    """
-    if not snaps:
-        return
-    server_tps = server_tokens_per_sec(snaps)
-    peak_run = peak_running_reqs(snaps)
-    peak_cache = peak_cache_hit_rate(snaps)
-    metrics["server_tokens_per_sec"] = server_tps if server_tps is not None else 0
-    metrics["peak_running_reqs"] = peak_run if peak_run is not None else 0
-    metrics["peak_cache_hit_rate"] = peak_cache if peak_cache is not None else 0
-
-    client_tps = metrics.get("prefill_tokens_per_sec", 0)
-    if server_tps and client_tps:
-        delta_pct = abs(client_tps - server_tps) / server_tps * 100
-        metrics["client_vs_server_delta_pct"] = delta_pct
-        _add_server_adjusted_tflops(metrics, server_tps)
-        if delta_pct > 5:
-            warnings.warn(
-                f"Tier 5: client tok/s={client_tps:.0f} vs server tok/s={server_tps:.0f} "
-                f"— {delta_pct:.1f}% divergence (>5%)"
-            )
-    if peak_run is not None and peak_run > batch_size + 1:
-        warnings.warn(
-            f"Tier 5: peak_running_reqs={peak_run:.0f} > batch_size+1={batch_size+1} — "
-            f"serial-wave contract violated (overlap still present)"
-        )
-    if peak_cache is not None and peak_cache > 0.05:
-        warnings.warn(
-            f"Tier 5: peak_cache_hit_rate={peak_cache:.3f} — prefix-cache contamination"
-        )
-
-
 def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
     """Compute prefill metrics using MoE-CAP wherever possible.
 
     MoE-CAP is the ground truth for S-MFU, S-MBU, prefill throughput
     (`prefill_tp`), and decoding throughput (`decoding_throughput`).
-    analyze.py keeps aggregate token/time primitives as
-    cross-checks because MoE-CAP does not expose those totals directly.
     raw_tflops is reconstructed from MoE-CAP S-MFU × MoE-CAP peak dense FLOPS.
 
     Returns None on failure; all S-M* are in percent 0-100.
@@ -382,9 +180,6 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         precision=precision_str,
     )
 
-    prefill_records = [r for r in records if r.get("forward_mode") == "prefill"]
-    raw = _aggregate_raw_throughput(prefill_records)
-
     result = _run_metrics(records, model_name, precision_str, num_gpus, gpu_raw_type, cap_config)
     if not result:
         return None
@@ -395,21 +190,16 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
     except KeyError:
         peak_tflops_sparse = 0
     peak_tflops_dense = peak_tflops_sparse / 2
-    peak_memory_tbps = get_peak_bw(gpu_raw_type) / 1e12 if gpu_raw_type else 0
-
     prefill_smfu_frac = result.get("prefill_smfu", 0)
     decoding_smfu_frac = result.get("decoding_smfu", 0)
     moe_cap_prefill_tps = result.get("prefill_tp")
     if moe_cap_prefill_tps is None:
-        moe_cap_prefill_tps = raw["tokens_per_sec"]
+        moe_cap_prefill_tps = 0
     moe_cap_decoding_tps = result.get("decoding_throughput", 0)
 
     metrics = {
         "prefill_tokens_per_sec": moe_cap_prefill_tps,
         "decoding_tokens_per_sec": moe_cap_decoding_tps,
-        "prefill_tokens_per_sec_aggregate": raw["tokens_per_sec"],
-        "prefill_total_tokens":   raw["total_tokens"],
-        "prefill_total_latency":  raw["total_latency"],
         "prefill_raw_tflops":     prefill_smfu_frac * num_gpus * peak_tflops_dense,
         "decoding_raw_tflops":    decoding_smfu_frac * num_gpus * peak_tflops_dense,
         "prefill_smfu":           prefill_smfu_frac * 100,
@@ -418,11 +208,8 @@ def compute_smfu_smbu(records: list, metadata: dict) -> Optional[dict]:
         "decoding_smbu":          result.get("decoding_smbu", 0) * 100,
         "ttft":                   result.get("ttft", 0),
         "tpot":                   result.get("tpot", 0),
-        "peak_dense_tflops_per_gpu": peak_tflops_dense,
-        "peak_memory_tbps_per_gpu": peak_memory_tbps,
         "num_gpus": num_gpus,
     }
-    metrics.update(_prefill_shape_metrics(prefill_records))
 
     # For Qwen3-Next: also compute with legacy Qwen3 path for comparison
     if "Qwen3-Next" in model_name:
@@ -446,7 +233,7 @@ def _copy_run_metadata(metrics: dict, metadata: dict, dataset_cfg: dict) -> None
     model_cfg = metadata.get("model_config", {})
     system = metadata.get("system_environment", {})
 
-    metrics["runner_mode"] = system.get("batch_runner", "upstream_or_unknown")
+    metrics["runner_mode"] = system.get("runner", "moe_cap.openai_api_profile")
     metrics["inference_engine"] = system.get("inference_engine", "")
     metrics["num_prompts"] = system.get("num_prompts", "")
     metrics["client_success_count"] = system.get("client_success_count", "")
@@ -719,129 +506,6 @@ def plot_legacy_comparison(slug: str, dataset: str, bs_data: dict,
     print(f"Saved {out_path}")
 
 
-def _positive(values):
-    return [v for v in values if isinstance(v, (int, float)) and v > 0]
-
-
-def plot_roofline_per_dataset(dataset: str, per_slug_bs_data: dict, out_path: Path) -> None:
-    """Plot prefill roofline: arithmetic intensity vs achieved TFLOPS.
-
-    Points use MoE-CAP's prefill S-MFU-derived TFLOPS. S-MFU and S-MBU are
-    shown as readings against the compute and memory roofs.
-    """
-    points = []
-    for slug, bs_data in sorted(per_slug_bs_data.items()):
-        for bs, metrics in sorted(bs_data.items()):
-            x = metrics.get("prefill_arithmetic_intensity", 0)
-            num_gpus = metrics.get("num_gpus", 1)
-            y = metrics.get("prefill_raw_tflops", 0) / num_gpus if num_gpus else 0
-            if x > 0 and y > 0:
-                points.append((slug, bs, x, y, metrics))
-
-    if not points:
-        return
-
-    peak_dense = max(
-        _positive([
-            m.get("peak_dense_tflops_per_gpu", 0)
-            for _, _, _, _, m in points
-        ]),
-        default=0,
-    )
-    peak_bw = max(
-        _positive([
-            m.get("peak_memory_tbps_per_gpu", 0)
-            for _, _, _, _, m in points
-        ]),
-        default=0,
-    )
-    if not peak_dense or not peak_bw:
-        return
-
-    xs = [p[2] for p in points]
-    ys = [p[3] for p in points]
-    ridge = peak_dense / peak_bw
-    x_min_data = min(xs)
-    x_max_data = max(xs)
-    y_min_data = min(ys)
-    y_max_data = max(ys)
-
-    # Pad log axes multiplicatively and include the ridge only when doing so
-    # does not dwarf the actual measured points.
-    x_min = x_min_data / 1.5
-    x_max = x_max_data * 1.5
-    if x_min / 10 <= ridge <= x_max * 10:
-        x_min = min(x_min, ridge / 1.5)
-        x_max = max(x_max, ridge * 1.5)
-
-    log_x_min = math.log10(x_min)
-    log_x_max = math.log10(x_max)
-    roof_x = [
-        10 ** (log_x_min + (log_x_max - log_x_min) * i / 99)
-        for i in range(100)
-    ]
-    roof_y = [min(peak_dense, peak_bw * x) for x in roof_x]
-
-    fig, ax = plt.subplots(figsize=(10, 7))
-    ax.plot(roof_x, roof_y, color="black", linewidth=2.0, label="Roofline")
-    if x_min <= ridge <= x_max:
-        ax.axvline(ridge, color="0.45", linestyle=":", linewidth=1.2,
-                   label=f"Ridge ~{ridge:.0f} FLOPs/byte")
-
-    color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    for i, slug in enumerate(sorted(per_slug_bs_data.keys())):
-        slug_points = [p for p in points if p[0] == slug]
-        if not slug_points:
-            continue
-        color = color_cycle[i % len(color_cycle)]
-        slug_points.sort(key=lambda p: p[1])
-        ax.plot(
-            [p[2] for p in slug_points],
-            [p[3] for p in slug_points],
-            "o-",
-            color=color,
-            label=slug,
-        )
-        for _, bs, x, y, metrics in slug_points:
-            smfu = metrics.get("prefill_smfu", 0)
-            smbu = metrics.get("prefill_smbu", 0)
-            ax.annotate(
-                f"bs{bs}\nS-MFU {smfu:.1f}%\nS-MBU {smbu:.1f}%",
-                xy=(x, y),
-                xytext=(5, 5),
-                textcoords="offset points",
-                fontsize=7,
-                color=color,
-            )
-
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("Arithmetic intensity (FLOPs/byte, B x S projection)")
-    ax.set_ylabel("Achieved prefill performance per GPU (TFLOPs/s)")
-    ax.set_title(f"{dataset} — Prefill Roofline")
-    ax.set_xlim(x_min, x_max)
-    y_floor = max(y_min_data / 1.5, 1e-6)
-    y_top = y_max_data * 1.5
-    if y_floor <= peak_dense <= y_top * 10:
-        y_top = max(y_top, peak_dense * 1.5)
-    ax.set_ylim(y_floor, y_top)
-    secax = ax.secondary_yaxis(
-        "right",
-        functions=(
-            lambda tflops: tflops / peak_dense * 100,
-            lambda pct: pct / 100 * peak_dense,
-        ),
-    )
-    secax.set_ylabel("S-MFU equivalent (%)")
-    ax.grid(True, which="both", linestyle=":", linewidth=0.6, alpha=0.5)
-    ax.legend(loc="best", fontsize="small")
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"Saved {out_path}")
-
-
 def write_raw_values(raw: list, out_path: Path) -> None:
     """Write every computed metric cell to CSV.
 
@@ -855,47 +519,15 @@ def write_raw_values(raw: list, out_path: Path) -> None:
         "chunked_prefill_size", "max_prefill_tokens", "mem_fraction_static",
         "target_output_tokens",
         "disable_radix_cache",
-        # MoE-CAP throughput plus analyze.py aggregate cross-checks
+        # MoE-CAP metrics and direct derivatives
         "prefill_tokens_per_sec", "decoding_tokens_per_sec",
-        "prefill_tokens_per_sec_aggregate",
-        "prefill_total_tokens", "prefill_total_latency",
-        # Derived
         "prefill_raw_tflops", "decoding_raw_tflops",
         "prefill_smfu", "prefill_smbu", "decoding_smfu", "decoding_smbu",
-        "ttft", "tpot",
-        # Actual SGLang prefill shape used to validate the batch sweep.
-        "prefill_record_count", "prefill_actual_max_batch_size",
-        "prefill_actual_avg_batch_size", "prefill_actual_max_seq_lens_sum",
-        "prefill_actual_avg_seq_lens_sum",
-        "prefill_actual_token_weighted_seq_lens_sum",
-        # Roofline coordinates/readings. MFU/MBU are relative to the roofs.
-        "prefill_target_input_tokens", "prefill_arithmetic_intensity",
-        "prefill_intended_arithmetic_intensity",
-        "prefill_roofline_tflops_total", "prefill_roofline_tflops_per_gpu",
-        "prefill_roofline_smfu",
-        "prefill_roofline_bandwidth_tbps", "prefill_roofline_smbu",
-        # /metrics-scaled diagnostics. These do not replace MoE-CAP roofline fields.
-        "prefill_server_adjusted_tflops_total",
-        "prefill_server_adjusted_tflops_per_gpu",
-        "prefill_server_adjusted_smfu",
-        "prefill_server_adjusted_bandwidth_tbps",
-        "prefill_server_adjusted_smbu",
-        "peak_dense_tflops_per_gpu", "peak_memory_tbps_per_gpu", "num_gpus",
-        # Tier 5 server-side cross-check (/metrics counters)
-        "server_tokens_per_sec", "client_vs_server_delta_pct",
-        "peak_running_reqs", "peak_cache_hit_rate",
+        "ttft", "tpot", "num_gpus",
         # Legacy Qwen3-path derivations (Qwen3-Next only)
         "prefill_raw_tflops_legacy", "decoding_raw_tflops_legacy",
         "prefill_smfu_legacy", "prefill_smbu_legacy",
         "decoding_smfu_legacy", "decoding_smbu_legacy",
-        "prefill_roofline_tflops_total_legacy", "prefill_roofline_tflops_per_gpu_legacy",
-        "prefill_roofline_smfu_legacy",
-        "prefill_roofline_bandwidth_tbps_legacy", "prefill_roofline_smbu_legacy",
-        "prefill_server_adjusted_tflops_total_legacy",
-        "prefill_server_adjusted_tflops_per_gpu_legacy",
-        "prefill_server_adjusted_smfu_legacy",
-        "prefill_server_adjusted_bandwidth_tbps_legacy",
-        "prefill_server_adjusted_smbu_legacy",
     ]
 
     rows = sorted(raw, key=lambda t: (t[2], t[0], t[1]))
@@ -941,46 +573,6 @@ def walk_results(results_dir: Path):
                         yield slug, bs_dir.name, dataset_dir.name, model_dir
 
 
-def resolve_target_input_tokens(
-    metadata: dict,
-    records: list,
-    slug: str,
-    dataset: str,
-    repo_dir: Path,
-) -> Optional[int]:
-    """Find the fixed prefill sequence length for roofline X coordinates."""
-    for section in ("benchmark_config", "dataset_config", "model_config", "system_environment"):
-        value = metadata.get(section, {}).get("target_input_tokens")
-        if value is not None:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                pass
-
-    config_path = repo_dir / "configs" / f"{dataset}_{slug}.yaml"
-    if config_path.exists():
-        try:
-            cfg = yaml.safe_load(config_path.read_text()) or {}
-            value = cfg.get("target_input_tokens")
-            if value is not None:
-                return int(value)
-        except Exception as exc:
-            warnings.warn(f"Could not read target_input_tokens from {config_path}: {exc}")
-
-    # Last-resort inference for older folders: use the largest prefill step as
-    # an approximate sequence length after dividing out the observed batch.
-    candidates = []
-    for r in records:
-        seq = r.get("seq_lens_sum", 0)
-        rb = r.get("batch_size") or metadata.get("system_environment", {}).get("batch_size") or 1
-        try:
-            if seq > 10 and rb > 0:
-                candidates.append(int(round(seq / rb)))
-        except TypeError:
-            continue
-    return max(candidates) if candidates else None
-
-
 def load_dataset_config_for_result(repo_dir: Path, dataset: str, slug: str) -> dict:
     """Best-effort load of configs/<dataset>_<slug>.yaml for result metadata."""
     config_path = repo_dir / "configs" / f"{dataset}_{slug}.yaml"
@@ -1020,21 +612,11 @@ def main() -> None:
             warnings.warn(f"Skipping {slug} {bs_dir_name} {dataset} — no valid metrics")
             continue
 
-        bs = meta["system_environment"]["batch_size"]
-        # Tier 5: cross-check with server-side /metrics counters. Snapshot file
-        # lives two levels above the <org>/<model> leaf (under the dataset dir).
-        dataset_dir = leaf_dir.parent.parent
-        snap_path = dataset_dir / f"sglang_metrics_bs{bs}.jsonl"
-        snaps = load_snapshots(str(snap_path))
-        _merge_tier5(metrics, snaps, bs)
         repo_dir = Path(__file__).resolve().parent
         dataset_cfg = load_dataset_config_for_result(repo_dir, dataset, slug)
         _copy_run_metadata(metrics, meta, dataset_cfg)
-        target_input_tokens = resolve_target_input_tokens(
-            meta, normalized, slug, dataset, repo_dir
-        )
-        _finalize_roofline_metrics(metrics, bs, target_input_tokens)
 
+        bs = meta["system_environment"]["batch_size"]
         raw.append((slug, bs, dataset, metrics))
         print(f"  {slug} bs={bs} {dataset}: "
               f"tok/s={metrics['prefill_tokens_per_sec']:.0f} "
@@ -1047,17 +629,6 @@ def main() -> None:
                   f"S-MFU={metrics['decoding_smfu']:.1f}% "
                   f"S-MBU={metrics['decoding_smbu']:.1f}% "
                   f"TPOT={metrics.get('tpot', 0):.4f}s")
-        if "prefill_roofline_tflops_per_gpu" in metrics:
-            print(f"    roofline: AI={metrics['prefill_arithmetic_intensity']:.0f} "
-                  f"(actual max batch={metrics.get('prefill_actual_max_batch_size', 0):.0f}) "
-                  f"TFLOPS/GPU={metrics['prefill_roofline_tflops_per_gpu']:.1f} "
-                  f"MFU={metrics['prefill_roofline_smfu']:.1f}% "
-                  f"MBU={metrics['prefill_roofline_smbu']:.2f}%")
-        if "prefill_server_adjusted_tflops_per_gpu" in metrics:
-            print(f"    server-adjusted diagnostic: "
-                  f"TFLOPS/GPU={metrics['prefill_server_adjusted_tflops_per_gpu']:.1f} "
-                  f"MFU={metrics['prefill_server_adjusted_smfu']:.1f}% "
-                  f"MBU={metrics['prefill_server_adjusted_smbu']:.2f}%")
         if "prefill_smfu_legacy" in metrics:
             print(f"    legacy: "
                   f"TFLOPS={metrics['prefill_raw_tflops_legacy']:.1f} "
@@ -1112,9 +683,6 @@ def main() -> None:
         plot_metric_per_dataset(
             dataset, per_slug, "Decoding tokens/sec", "decoding_tokens_per_sec",
             results_dir / f"decoding_tokens_per_sec_{dataset}.png",
-        )
-        plot_roofline_per_dataset(
-            dataset, per_slug, results_dir / f"roofline_{dataset}.png",
         )
         for slug, bs_data in sorted(per_slug.items()):
             plot_smfu_smbu_for_model(

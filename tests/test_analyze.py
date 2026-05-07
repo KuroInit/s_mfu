@@ -163,7 +163,6 @@ def test_compute_smfu_smbu_returns_percentages():
     assert result["prefill_smfu"] == pytest.approx(42.0)
     assert result["prefill_smbu"] == pytest.approx(55.0)
     assert result["prefill_tokens_per_sec"] == pytest.approx(1234.0)
-    assert result["prefill_tokens_per_sec_aggregate"] == pytest.approx(0.0)
     assert result["decoding_smfu"] == pytest.approx(30.0)
     assert result["decoding_smbu"] == pytest.approx(88.0)
 
@@ -326,30 +325,6 @@ def test_compute_smfu_smbu_includes_raw_tflops():
     assert result["decoding_raw_tflops"] == pytest.approx(expected_decode, rel=1e-3)
 
 
-def test_server_tps_diagnostic_does_not_replace_moe_cap_roofline():
-    from analyze import _finalize_roofline_metrics, _merge_tier5
-    metrics = {
-        "prefill_tokens_per_sec": 100.0,
-        "prefill_raw_tflops": 200.0,
-        "prefill_smfu": 20.0,
-        "peak_dense_tflops_per_gpu": 1000.0,
-        "peak_memory_tbps_per_gpu": 3.35,
-        "num_gpus": 1,
-    }
-    snaps = [
-        {"_ts": 0.0, "sglang:prompt_tokens_total": 0.0},
-        {"_ts": 1.0, "sglang:prompt_tokens_total": 50.0},
-    ]
-
-    _merge_tier5(metrics, snaps, batch_size=1)
-    _finalize_roofline_metrics(metrics, batch_size=1, target_input_tokens=1024)
-
-    assert metrics["prefill_roofline_tflops_total"] == pytest.approx(200.0)
-    assert metrics["prefill_roofline_smfu"] == pytest.approx(20.0)
-    assert metrics["prefill_server_adjusted_tflops_total"] == pytest.approx(100.0)
-    assert "prefill_roofline_tflops" not in metrics
-
-
 # ── compute_smfu_smbu Qwen3-Next legacy comparison ───────────────────────────
 
 def test_compute_smfu_smbu_qwen3_next_includes_legacy():
@@ -467,14 +442,14 @@ def test_aggregate_by_dataset_keeps_metadata_strings():
     from analyze import aggregate_by_dataset
     raw = [
         ("model_a", 1, "longbench_v2",
-         {"prefill_smfu": 40.0, "runner_mode": "strict_barrier_waves_v2"}),
+         {"prefill_smfu": 40.0, "runner_mode": "moe_cap.openai_api_profile"}),
         ("model_a", 1, "longbench_v2",
-         {"prefill_smfu": 60.0, "runner_mode": "strict_barrier_waves_v2"}),
+         {"prefill_smfu": 60.0, "runner_mode": "moe_cap.openai_api_profile"}),
     ]
     agg = aggregate_by_dataset(raw)
     cell = agg["longbench_v2"]["model_a"][1]
     assert cell["prefill_smfu"] == pytest.approx(50.0)
-    assert cell["runner_mode"] == "strict_barrier_waves_v2"
+    assert cell["runner_mode"] == "moe_cap.openai_api_profile"
 
 
 # ── plot_metric_per_dataset ───────────────────────────────────────────────────
@@ -556,7 +531,7 @@ def test_write_raw_values_includes_run_metadata_columns(tmp_path):
     raw = [
         ("qwen1_5_moe", 2, "batched_prefill",
          {"prefill_smfu": 12.0, "prefill_smbu": 4.0,
-          "runner_mode": "strict_barrier_waves_v2",
+          "runner_mode": "moe_cap.openai_api_profile",
           "chunked_prefill_size": 32768,
           "max_prefill_tokens": 32768,
           "mem_fraction_static": 0.9}),
@@ -566,7 +541,7 @@ def test_write_raw_values_includes_run_metadata_columns(tmp_path):
     with out.open(newline="") as f:
         rows = list(csv.DictReader(f))
 
-    assert rows[0]["runner_mode"] == "strict_barrier_waves_v2"
+    assert rows[0]["runner_mode"] == "moe_cap.openai_api_profile"
     assert rows[0]["chunked_prefill_size"] == "32768"
     assert rows[0]["max_prefill_tokens"] == "32768"
     assert rows[0]["mem_fraction_static"] == "0.9"

@@ -244,6 +244,13 @@ class TestGpuSelection:
         with patch("orchestrator.subprocess.run", return_value=result):
             assert select_idle_gpus(1) == ["1"]
 
+    def test_wait_for_idle_gpus_sleeps_and_retries(self):
+        from orchestrator import wait_for_idle_gpus
+        with patch("orchestrator.select_idle_gpus", side_effect=[[], ["1"]]):
+            with patch("orchestrator.time.sleep") as mock_sleep:
+                assert wait_for_idle_gpus(1) == ["1"]
+        mock_sleep.assert_called_once_with(15)
+
 
 class TestKillSglang:
     def test_terminates_running_process(self):
@@ -530,7 +537,7 @@ class TestRunSweep:
         assert args[1] == 2  # tp=2
         assert ckpt.is_done("m_tp2", 1, "gsm8k")
 
-    def test_skips_without_checkpoint_when_not_enough_idle_gpus(self, tmp_path):
+    def test_waits_for_idle_gpus_before_starting(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint
         ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
         cfg = {
@@ -539,11 +546,18 @@ class TestRunSweep:
             "datasets": ["gsm8k"],
             "models": [{"id": "org/modelA", "slug": "model_a", "tp": 2}],
         }
-        with patch("orchestrator.select_idle_gpus", return_value=[]):
-            with patch("orchestrator.start_sglang") as mock_start:
-                run_sweep(cfg, ckpt)
-        mock_start.assert_not_called()
-        assert ckpt._entries == []
+        with patch("orchestrator.select_idle_gpus", side_effect=[[], ["0", "1"]]):
+            with patch("orchestrator.time.sleep") as mock_sleep:
+                with patch("orchestrator.start_sglang", return_value=MagicMock()) as mock_start:
+                    with patch("orchestrator.wait_for_health", return_value=True):
+                        with patch("orchestrator.run_benchmark", return_value=0):
+                            with patch("orchestrator.kill_sglang"):
+                                with patch("orchestrator.wait_port_free", return_value=True):
+                                    with patch("orchestrator.persist_moe_cap_server_records",
+                                               return_value=tmp_path / "records.jsonl"):
+                                        run_sweep(cfg, ckpt)
+        mock_sleep.assert_called_once_with(15)
+        assert mock_start.call_args.args[-1] == ["0", "1"]
 
     def test_records_oom_failure_when_sglang_exits_during_startup(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint

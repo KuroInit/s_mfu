@@ -29,6 +29,7 @@ SGLANG_HEALTH_INTERVAL = 5     # seconds between health polls
 SGLANG_SHUTDOWN_GRACE = 30     # seconds before SIGKILL
 PORT_FREE_TIMEOUT = 60         # seconds to wait for port to clear
 GPU_FREE_MEMORY_USED_MB = int(os.environ.get("GPU_FREE_MEMORY_USED_MB", "1024"))
+GPU_RETRY_INTERVAL_SECONDS = int(os.environ.get("GPU_RETRY_INTERVAL_SECONDS", "15"))
 
 
 def _disable_radix_cache_enabled() -> bool:
@@ -107,6 +108,19 @@ def select_idle_gpus(required: int) -> Optional[list[str]]:
         and memory_used <= GPU_FREE_MEMORY_USED_MB
     ]
     return idle[:required] if len(idle) >= required else []
+
+
+def wait_for_idle_gpus(required: int) -> Optional[list[str]]:
+    """Wait until enough idle GPUs are available, or return None when unmanaged."""
+    while True:
+        selected = select_idle_gpus(required)
+        if selected != []:
+            return selected
+        print(
+            f"[gpu] Waiting {GPU_RETRY_INTERVAL_SECONDS}s for {required} idle GPU(s) "
+            f"(threshold={GPU_FREE_MEMORY_USED_MB}MB used)"
+        )
+        time.sleep(GPU_RETRY_INTERVAL_SECONDS)
 
 
 # ─── Checkpoint ──────────────────────────────────────────────────────────────
@@ -540,15 +554,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                 )
                 print(sep)
 
-                selected_gpus = select_idle_gpus(tp)
-                if selected_gpus == []:
-                    print(
-                        f"[gpu] Skipping {slug} bs={batch_size} {dataset}: "
-                        f"tp={tp} requires {tp} idle GPU(s), but fewer are free "
-                        f"(threshold={GPU_FREE_MEMORY_USED_MB}MB used)"
-                    )
-                    done += 1
-                    continue
+                selected_gpus = wait_for_idle_gpus(tp)
 
                 proc = start_sglang(
                     model_id,

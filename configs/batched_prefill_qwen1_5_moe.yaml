@@ -9,7 +9,7 @@ dataset_split: test
 num_samples: 200
 
 fixed_length_mode: true
-target_input_tokens: 1024
+target_input_tokens: 2048
 target_output_tokens: 1
 chunked_prefill_size: 131072
 max_prefill_tokens: 131072

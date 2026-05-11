@@ -13,7 +13,8 @@ def test_active_sweep_requests_fit_model_context_windows():
     assert [model["slug"] for model in sweep["models"]] == [
         "qwen1_5_moe",
         "qwen3_30b",
-        "qwen3_next_80b",
+        "deepseek_v2_lite",
+        "deepseek_moe_16b_chat",
     ]
 
     for model in sweep["models"]:
@@ -41,15 +42,13 @@ def test_active_batched_prefill_sweep_can_exercise_high_batch_with_chunking():
     cfg = _load_yaml("configs/batched_prefill_qwen1_5_moe.yaml")
 
     assert cfg["prefill_mode"] == "batched"
-    assert cfg["target_input_tokens"] == 1024
+    assert cfg["target_input_tokens"] == 2048
     assert cfg["target_output_tokens"] == 1
     assert cfg["chunked_prefill_size"] == 131072
     assert cfg["max_prefill_tokens"] == 131072
     assert cfg["mem_fraction_static"] == 0.9
-    # Prompts tokenize to roughly 1,050 tokens; this fits the intended 1K target
-    # while avoiding the 150K startup-memory failure.
-    assert 128 * cfg["target_input_tokens"] <= cfg["chunked_prefill_size"]
-    assert 128 * cfg["target_input_tokens"] <= cfg["max_prefill_tokens"]
+    assert 64 * cfg["target_input_tokens"] <= cfg["chunked_prefill_size"]
+    assert 64 * cfg["target_input_tokens"] <= cfg["max_prefill_tokens"]
 
 
 def test_active_sweep_batch_cells_fit_h100_nvl_memory_estimate():

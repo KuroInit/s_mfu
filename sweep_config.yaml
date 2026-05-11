@@ -24,6 +24,20 @@ models:
     weight_gb_per_gpu: 60.0
     kv_bytes_per_token_per_gpu: 98304
 
+  - id: deepseek-ai/DeepSeek-V2-Lite-Chat
+    tp: 1
+    slug: deepseek_v2_lite
+    max_context_tokens: 163840
+    weight_gb_per_gpu: 31.4
+    kv_bytes_per_token_per_gpu: 31744
+
+  - id: deepseek-ai/deepseek-moe-16b-chat
+    tp: 1
+    slug: deepseek_moe_16b_chat
+    max_context_tokens: 4096
+    weight_gb_per_gpu: 32.0
+    kv_bytes_per_token_per_gpu: 65536
+
   # - id: Qwen/Qwen3-Next-80B-A3B-Instruct
   #   tp: 2
   #   slug: qwen3_next_80b

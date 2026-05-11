@@ -50,7 +50,7 @@ docker compose up
 Current batched-prefill scope:
 
 ```yaml
-batch_sizes: [2, 4, 8, 16, 32, 64, 128, 256, 512]
+batch_sizes: [2, 4, 8, 16, 32, 64, 128, 256]
 datasets: [batched_prefill]
 port: 30000
 gpu_memory_gb: 94
@@ -68,21 +68,29 @@ models:
     max_context_tokens: 40960
     weight_gb_per_gpu: 60.0
     kv_bytes_per_token_per_gpu: 98304
-  - id: Qwen/Qwen3-Next-80B-A3B-Instruct
-    tp: 2
-    slug: qwen3_next_80b
-    max_context_tokens: 262144
-    weight_gb_per_gpu: 74.3
-    kv_bytes_per_token_per_gpu: 49152
+  - id: deepseek-ai/DeepSeek-V2-Lite-Chat
+    tp: 1
+    slug: deepseek_v2_lite
+    max_context_tokens: 163840
+    weight_gb_per_gpu: 31.4
+    kv_bytes_per_token_per_gpu: 31744
+  - id: deepseek-ai/deepseek-moe-16b-chat
+    tp: 1
+    slug: deepseek_moe_16b_chat
+    max_context_tokens: 4096
+    weight_gb_per_gpu: 32.0
+    kv_bytes_per_token_per_gpu: 65536
 ```
 
 - `tp` is set by necessity only — TP=1 unless the model won't fit on one GPU.
 - `gpu_memory_gb`, `max_context_tokens`, `weight_gb_per_gpu`, and `kv_bytes_per_token_per_gpu` are harness preflight guardrails. They make impossible batch cells fail before SGLang loads weights.
-- Qwen3-30B and Qwen3-Next-80B are capped at `max_batch_size: 256` in their active batched-prefill configs, so only Qwen1.5-MoE attempts `bs=512`.
+- Some models are capped below the global sweep max with `max_batch_size`
+  in their active batched-prefill configs.
 - Optional `chunked_prefill_size` and `max_prefill_tokens` can be set per model or dataset when an operator needs explicit SGLang scheduling overrides.
 - SGLang radix/prefix caching is disabled by default with `--disable-radix-cache`; set `DISABLE_RADIX_CACHE=0` only for debugging cached-prefix behavior, not for S-MFU/S-MBU measurements.
 
-**Dropped in this sweep:** DeepSeek. The active sweep uses Qwen MoE models with LongBench V2 prompts fixed to 1K input tokens and 1 output token.
+The active sweep includes Qwen MoE, DeepSeek-V2-Lite, and the original
+DeepSeekMoE 16B chat model.
 
 ## `configs/`
 

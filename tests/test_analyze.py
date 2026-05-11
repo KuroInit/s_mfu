@@ -474,6 +474,13 @@ def test_aggregate_by_dataset_keeps_metadata_strings():
 
 # ── plot_metric_per_dataset ───────────────────────────────────────────────────
 
+def test_plot_scale_helpers_pad_above_max_values():
+    from analyze import _positive_axis_bounds, _zero_based_upper
+    x_lo, x_hi = _positive_axis_bounds([2, 4, 120])
+    assert x_lo < 2
+    assert x_hi > 120
+    assert _zero_based_upper([5, 120]) > 120
+
 def test_plot_metric_per_dataset_saves_file(tmp_path):
     from analyze import plot_metric_per_dataset
     per_slug = {

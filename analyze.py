@@ -345,6 +345,51 @@ def aggregate_results(raw: list) -> dict:
     return result
 
 
+def _numeric_values(values: list) -> list:
+    """Return finite numeric values, excluding bools and empty metadata."""
+    result = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if value != value:
+            continue
+        result.append(value)
+    return result
+
+
+def _positive_axis_bounds(values: list, pad_fraction: float = 0.10) -> Optional[tuple[float, float]]:
+    """Return padded positive bounds for a log-scaled axis."""
+    numeric = [v for v in _numeric_values(values) if v > 0]
+    if not numeric:
+        return None
+    lo = min(numeric)
+    hi = max(numeric)
+    lower = lo / (1 + pad_fraction)
+    upper = hi * (1 + pad_fraction)
+    if lower == upper:
+        upper = lower * (1 + pad_fraction)
+    return lower, upper
+
+
+def _zero_based_upper(values: list, pad_fraction: float = 0.10) -> float:
+    """Return a y-axis upper limit above the largest plotted value."""
+    numeric = _numeric_values(values)
+    if not numeric:
+        return 1.0
+    hi = max(numeric)
+    if hi <= 0:
+        return 1.0
+    return hi * (1 + pad_fraction)
+
+
+def _apply_plot_scale(ax, x_values: list, y_values: list) -> None:
+    """Pad plot axes so max x/y values are inside, not on, the boundary."""
+    x_bounds = _positive_axis_bounds(x_values)
+    if x_bounds is not None:
+        ax.set_xlim(*x_bounds)
+    ax.set_ylim(0, _zero_based_upper(y_values))
+
+
 def plot_single_metric(slug: str, bs_data: dict, metric_label: str,
                        prefill_key: str, out_path: Path,
                        prefill_legacy_key: str = None) -> None:
@@ -354,6 +399,7 @@ def plot_single_metric(slug: str, bs_data: dict, metric_label: str,
         return
 
     prefill_vals = [bs_data[bs].get(prefill_key, 0) for bs in batch_sizes]
+    y_vals = list(prefill_vals)
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(batch_sizes, prefill_vals, "o--", label="Prefill")
@@ -363,6 +409,7 @@ def plot_single_metric(slug: str, bs_data: dict, metric_label: str,
                   and any(prefill_legacy_key in bs_data[bs] for bs in batch_sizes))
     if has_legacy:
         leg_prefill = [bs_data[bs].get(prefill_legacy_key, 0) for bs in batch_sizes]
+        y_vals.extend(leg_prefill)
         ax.plot(batch_sizes, leg_prefill, "o:", color="tab:blue", alpha=0.4,
                 label="Prefill (Qwen3 legacy)")
 
@@ -373,11 +420,7 @@ def plot_single_metric(slug: str, bs_data: dict, metric_label: str,
     ax.set_ylabel(metric_label)
     ax.set_title(f"{slug} — {metric_label}")
     ax.legend()
-
-    if "%" in metric_label:
-        ax.set_ylim(0, 100)
-    else:
-        ax.set_ylim(bottom=0)
+    _apply_plot_scale(ax, batch_sizes, y_vals)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -462,17 +505,20 @@ def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
 
     fig, ax = plt.subplots(figsize=(9, 6))
     color_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    all_y_vals = []
 
     for i, slug in enumerate(slugs):
         bs_data = per_slug_bs_data[slug]
         bss = sorted(bs_data.keys())
         vals = [bs_data[bs].get(metric_key, 0) for bs in bss]
+        all_y_vals.extend(vals)
         color = color_cycle[i % len(color_cycle)]
         ax.plot(bss, vals, "o-", color=color, label=slug)
         _plot_failure_markers(ax, _failed_batches(bs_data), label=f"{slug} failure")
 
         if legacy_key and any(legacy_key in bs_data[bs] for bs in bss):
             leg_vals = [bs_data[bs].get(legacy_key, 0) for bs in bss]
+            all_y_vals.extend(leg_vals)
             ax.plot(bss, leg_vals, "o:", color=color, alpha=0.4,
                     label=f"{slug} (legacy)")
 
@@ -483,11 +529,7 @@ def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
     ax.set_ylabel(metric_label)
     ax.set_title(f"{dataset} — {metric_label}")
     ax.legend(loc="best", fontsize="small")
-
-    if "%" in metric_label:
-        ax.set_ylim(0, 100)
-    else:
-        ax.set_ylim(bottom=0)
+    _apply_plot_scale(ax, all_bs, all_y_vals)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -534,7 +576,7 @@ def plot_smfu_smbu_for_model(slug: str, dataset: str, bs_data: dict, out_path: P
     ax.set_xlabel("Batch Size")
     ax.set_ylabel("Utilization (%)")
     ax.set_title(f"{slug} — S-MFU / S-MBU — {dataset}")
-    ax.set_ylim(0, max(y_vals) + 20)
+    _apply_plot_scale(ax, batch_sizes, y_vals)
     ax.legend(loc="best")
     ax.grid(True, which="both", linestyle=":", linewidth=0.6, alpha=0.5)
 
@@ -560,6 +602,7 @@ def plot_legacy_comparison(slug: str, dataset: str, bs_data: dict,
 
     current_vals = [bs_data[bs].get(current_key, 0) for bs in batch_sizes]
     legacy_vals = [bs_data[bs].get(legacy_key, 0) for bs in batch_sizes]
+    y_vals = current_vals + legacy_vals
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(batch_sizes, current_vals, "o-", color="tab:blue", label="Current (Qwen3-Next path)")
@@ -572,11 +615,7 @@ def plot_legacy_comparison(slug: str, dataset: str, bs_data: dict,
     ax.set_ylabel(metric_label)
     ax.set_title(f"{slug} — {metric_label} — {dataset}")
     ax.legend(loc="best")
-
-    if "%" in metric_label:
-        ax.set_ylim(0, 100)
-    else:
-        ax.set_ylim(bottom=0)
+    _apply_plot_scale(ax, batch_sizes, y_vals)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)

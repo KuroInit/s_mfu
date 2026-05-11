@@ -283,9 +283,6 @@ def _copy_run_metadata(metrics: dict, metadata: dict, dataset_cfg: dict) -> None
     metrics.setdefault("run_status", "success")
     metrics["runner_mode"] = system.get("runner", "moe_cap.openai_api_profile")
     metrics["inference_engine"] = system.get("inference_engine", "")
-    metrics["num_prompts"] = system.get("num_prompts", "")
-    metrics["client_success_count"] = system.get("client_success_count", "")
-    metrics["client_fail_count"] = system.get("client_fail_count", "")
 
     for key in (
         "chunked_prefill_size",
@@ -632,8 +629,7 @@ def write_raw_values(raw: list, out_path: Path) -> None:
     metric_order = [
         # Run-shaping metadata
         "run_status", "failure_reason", "error", "cuda_visible_devices",
-        "runner_mode", "inference_engine", "num_prompts",
-        "client_success_count", "client_fail_count",
+        "runner_mode", "inference_engine",
         "chunked_prefill_size", "max_prefill_tokens", "mem_fraction_static",
         "target_output_tokens",
         "disable_radix_cache",

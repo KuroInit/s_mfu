@@ -572,6 +572,9 @@ def test_write_raw_values_includes_run_metadata_columns(tmp_path):
     assert rows[0]["chunked_prefill_size"] == "32768"
     assert rows[0]["max_prefill_tokens"] == "32768"
     assert rows[0]["mem_fraction_static"] == "0.9"
+    assert "num_prompts" not in rows[0]
+    assert "client_success_count" not in rows[0]
+    assert "client_fail_count" not in rows[0]
 
 
 def test_write_raw_values_includes_failure_columns(tmp_path):

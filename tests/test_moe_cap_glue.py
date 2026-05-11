@@ -60,3 +60,48 @@ def test_per_req_prefill_uses_packed_forward_throughput(monkeypatch):
     assert seen_prefill_tps == [200.0]
     assert result["prefill_tp"] == 200.0
     assert result["prefill_smfu"] == 200.0
+
+
+def test_continuous_attention_score_is_per_token_for_prefill():
+    from moe_cap.utils.basic_utils import _process_outputs_continuous
+
+    metrics = _process_outputs_continuous(
+        {
+            "forward_mode": "prefill",
+            "seq_lens_sum": 100,
+            "batch_size": 4,
+        },
+        per_token_kv_size=1,
+        attention_size_per_token=1,
+        model_name="model",
+        hf_config=None,
+        n_layers=1,
+        n_attn_heads=1,
+        d_head=1,
+    )
+
+    # Total attention score would be 200 / 1e12 for this toy prefill.
+    # The continuous-batching S-MFU formulas multiply attention_score by
+    # tokens/sec, so this must be normalized to per-token work.
+    assert metrics["attention_score"] == 2e-12
+
+
+def test_continuous_attention_score_is_per_generated_token_for_decode():
+    from moe_cap.utils.basic_utils import _process_outputs_continuous
+
+    metrics = _process_outputs_continuous(
+        {
+            "forward_mode": "decode",
+            "seq_lens_sum": 100,
+            "batch_size": 4,
+        },
+        per_token_kv_size=1,
+        attention_size_per_token=1,
+        model_name="model",
+        hf_config=None,
+        n_layers=1,
+        n_attn_heads=1,
+        d_head=1,
+    )
+
+    assert metrics["attention_score"] == 50e-12

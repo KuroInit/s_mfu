@@ -164,6 +164,7 @@ class TestStartSglang:
         assert "--expert-distribution-recorder-mode" in cmd
         assert "stat" in cmd
         assert "--enable-metrics" in cmd
+        assert "--enable-expert-distribution-metrics" in cmd
         assert "--disable-radix-cache" in cmd
 
     def test_radix_cache_can_be_enabled_for_debugging(self, monkeypatch):
@@ -490,7 +491,9 @@ class TestRunSweep:
                 with patch("orchestrator.run_benchmark", return_value=0):
                     with patch("orchestrator.kill_sglang"):
                         with patch("orchestrator.wait_port_free", return_value=True):
-                            run_sweep(self._make_config(), ckpt)
+                            with patch("orchestrator.persist_moe_cap_server_records",
+                                       return_value=tmp_path / "records.jsonl"):
+                                run_sweep(self._make_config(), ckpt)
         assert ckpt.is_done("model_a", 1, "gsm8k")
         assert ckpt.is_done("model_a", 1, "numinamath")
 
@@ -515,7 +518,9 @@ class TestRunSweep:
                 with patch("orchestrator.run_benchmark", return_value=0):
                     with patch("orchestrator.kill_sglang"):
                         with patch("orchestrator.wait_port_free", return_value=True):
-                            run_sweep(cfg, ckpt)
+                            with patch("orchestrator.persist_moe_cap_server_records",
+                                       return_value=tmp_path / "records.jsonl"):
+                                run_sweep(cfg, ckpt)
         # tp1 should be skipped, tp2 should have been started exactly once
         assert mock_start.call_count == 1
         # Verify tp passed through correctly
@@ -556,6 +561,20 @@ class TestRunSweep:
         assert mock_record.call_args.args[6] == "oom"
         assert mock_record.call_args.args[8] == ["0", "1"]
 
+    def test_marks_failed_when_runner_produces_no_server_records(self, tmp_path):
+        from orchestrator import run_sweep, Checkpoint
+        ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
+        with patch("orchestrator.start_sglang", return_value=MagicMock()):
+            with patch("orchestrator.wait_for_health", return_value=True):
+                with patch("orchestrator.run_benchmark", return_value=0):
+                    with patch("orchestrator.persist_moe_cap_server_records", return_value=None):
+                        with patch("orchestrator.persist_failure_record") as mock_failure:
+                            with patch("orchestrator.kill_sglang"):
+                                with patch("orchestrator.wait_port_free", return_value=True):
+                                    run_sweep(self._make_config(), ckpt)
+        assert not ckpt.is_done("model_a", 1, "gsm8k")
+        assert mock_failure.call_args.args[6] == "missing_server_records"
+
     def test_passes_selected_gpus_to_sglang(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint
         ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
@@ -565,7 +584,9 @@ class TestRunSweep:
                     with patch("orchestrator.run_benchmark", return_value=0):
                         with patch("orchestrator.kill_sglang"):
                             with patch("orchestrator.wait_port_free", return_value=True):
-                                run_sweep(self._make_config(), ckpt)
+                                with patch("orchestrator.persist_moe_cap_server_records",
+                                           return_value=tmp_path / "records.jsonl"):
+                                    run_sweep(self._make_config(), ckpt)
         assert mock_start.call_args.args[-1] == ["1"]
 
     def test_kill_sglang_called_in_finally_even_on_health_failure(self, tmp_path):

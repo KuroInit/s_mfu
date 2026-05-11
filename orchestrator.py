@@ -200,6 +200,7 @@ def start_sglang(
         "--tp-size", str(tp),
         "--max-running-requests", str(batch_size),
         "--enable-metrics",
+        "--enable-expert-distribution-metrics",
     ]
     if _disable_radix_cache_enabled():
         cmd += ["--disable-radix-cache"]
@@ -323,6 +324,9 @@ def persist_moe_cap_server_records(model_id: str, output_dir: str, dataset: str)
     src = Path(base) / model_id / "expert_distribution_record.jsonl"
     if not src.exists():
         print(f"[runner] WARNING: MoE-CAP server record file not found: {src}")
+        return None
+    if src.stat().st_size == 0:
+        print(f"[runner] WARNING: MoE-CAP server record file is empty: {src}")
         return None
 
     dest_dir = Path(output_dir) / model_id
@@ -584,9 +588,25 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                     rc = run_benchmark(config_file, batch_size, output_dir, port)
 
                     if rc == 0:
-                        persist_moe_cap_server_records(model_id, output_dir, dataset)
-                        checkpoint.mark(slug, batch_size, dataset, "success", model_id=model_id)
-                        print(f"[sweep]   ✓ {dataset}")
+                        preserved = persist_moe_cap_server_records(model_id, output_dir, dataset)
+                        if preserved is None:
+                            error = (
+                                "Runner completed but no valid SGLang server records were found; "
+                                "continuous-batching metrics would be invalid"
+                            )
+                            persist_failure_record(
+                                model_id, slug, output_dir, dataset, batch_size,
+                                tp, "missing_server_records", error, selected_gpus,
+                            )
+                            checkpoint.mark(
+                                slug, batch_size, dataset, "failed",
+                                error,
+                                model_id=model_id,
+                            )
+                            print(f"[sweep]   ✗ {dataset} ({error})")
+                        else:
+                            checkpoint.mark(slug, batch_size, dataset, "success", model_id=model_id)
+                            print(f"[sweep]   ✓ {dataset}")
                     else:
                         error = f"Runner exited with code {rc}"
                         persist_failure_record(

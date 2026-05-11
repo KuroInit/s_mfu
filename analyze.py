@@ -47,10 +47,7 @@ def load_triple(leaf_dir: Path, bs_dir_name: str):
         records_file = find_latest_file(leaf_dir, "detailed_results_*.jsonl")
     failure_file = find_latest_file(leaf_dir, "failure_*.json")
 
-    if meta_file is None:
-        if failure_file is None:
-            warnings.warn(f"No metadata file in {leaf_dir} — skipping")
-            return None, None
+    if failure_file is not None:
         with open(failure_file) as f:
             failure = json.load(f)
         bs = failure.get("batch_size")
@@ -73,25 +70,13 @@ def load_triple(leaf_dir: Path, bs_dir_name: str):
             },
         }
         return meta, []
+
+    if meta_file is None:
+        warnings.warn(f"No metadata file in {leaf_dir} — skipping")
+        return None, None
     if records_file is None:
-        if failure_file is None:
-            warnings.warn(f"No server_records or detailed_results file in {leaf_dir} — skipping")
-            return None, None
-        with open(failure_file) as f:
-            failure = json.load(f)
-        meta = {
-            "__failure__": failure,
-            "model_config": {
-                "model_name": failure.get("model", ""),
-            },
-            "hardware": {
-                "num_gpus": failure.get("tp", ""),
-            },
-            "system_environment": {
-                "batch_size": failure.get("batch_size"),
-            },
-        }
-        return meta, []
+        warnings.warn(f"No server_records or detailed_results file in {leaf_dir} — skipping")
+        return None, None
 
     with open(meta_file) as f:
         meta = json.load(f)
@@ -431,17 +416,19 @@ def aggregate_by_dataset(raw: list) -> dict:
     return result
 
 
-def _failed_batches(bs_data: dict, status: str = "oom") -> list:
-    """Return batch sizes whose aggregated run_status includes the requested status."""
+def _failed_batches(bs_data: dict, status: Optional[str] = None) -> list:
+    """Return batch sizes whose aggregated run_status indicates a failed run."""
     failed = []
     for bs, metrics in bs_data.items():
         statuses = str(metrics.get("run_status", "")).lower().split(";")
-        if status.lower() in statuses:
+        if status is not None and status.lower() in statuses:
+            failed.append(bs)
+        elif status is None and any(s and s != "success" for s in statuses):
             failed.append(bs)
     return sorted(failed)
 
 
-def _plot_failure_markers(ax, batches: list, label: str = "OOM") -> None:
+def _plot_failure_markers(ax, batches: list, label: str = "Failure") -> None:
     """Mark failed sweep cells at the plot baseline."""
     if not batches:
         return
@@ -482,7 +469,7 @@ def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
         vals = [bs_data[bs].get(metric_key, 0) for bs in bss]
         color = color_cycle[i % len(color_cycle)]
         ax.plot(bss, vals, "o-", color=color, label=slug)
-        _plot_failure_markers(ax, _failed_batches(bs_data), label=f"{slug} OOM")
+        _plot_failure_markers(ax, _failed_batches(bs_data), label=f"{slug} failure")
 
         if legacy_key and any(legacy_key in bs_data[bs] for bs in bss):
             leg_vals = [bs_data[bs].get(legacy_key, 0) for bs in bss]

@@ -30,6 +30,7 @@ SGLANG_SHUTDOWN_GRACE = 30     # seconds before SIGKILL
 PORT_FREE_TIMEOUT = 60         # seconds to wait for port to clear
 GPU_FREE_MEMORY_USED_MB = int(os.environ.get("GPU_FREE_MEMORY_USED_MB", "1024"))
 GPU_RETRY_INTERVAL_SECONDS = int(os.environ.get("GPU_RETRY_INTERVAL_SECONDS", "15"))
+GPU_MAX_IDLE_CHECKS = int(os.environ.get("GPU_MAX_IDLE_CHECKS", "3"))
 
 
 def _disable_radix_cache_enabled() -> bool:
@@ -111,14 +112,24 @@ def select_idle_gpus(required: int) -> Optional[list[str]]:
 
 
 def wait_for_idle_gpus(required: int) -> Optional[list[str]]:
-    """Wait until enough idle GPUs are available, or return None when unmanaged."""
+    """Wait for enough idle GPUs, then return [] if the retry budget is exhausted."""
+    failed_checks = 0
     while True:
         selected = select_idle_gpus(required)
         if selected != []:
             return selected
+        failed_checks += 1
+        if failed_checks >= GPU_MAX_IDLE_CHECKS:
+            print(
+                f"[gpu] No free idle GPU available for tp={required} after "
+                f"{failed_checks} check(s) "
+                f"(threshold={GPU_FREE_MEMORY_USED_MB}MB used)"
+            )
+            return []
         print(
             f"[gpu] Waiting {GPU_RETRY_INTERVAL_SECONDS}s for {required} idle GPU(s) "
-            f"(threshold={GPU_FREE_MEMORY_USED_MB}MB used)"
+            f"(check {failed_checks}/{GPU_MAX_IDLE_CHECKS}, "
+            f"threshold={GPU_FREE_MEMORY_USED_MB}MB used)"
         )
         time.sleep(GPU_RETRY_INTERVAL_SECONDS)
 
@@ -555,6 +566,13 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                 print(sep)
 
                 selected_gpus = wait_for_idle_gpus(tp)
+                if selected_gpus == []:
+                    print(
+                        f"[gpu] Skipping {slug} bs={batch_size} {dataset}: "
+                        f"no free idle GPU available for tp={tp}"
+                    )
+                    done += 1
+                    continue
 
                 proc = start_sglang(
                     model_id,

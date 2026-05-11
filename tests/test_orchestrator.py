@@ -251,6 +251,13 @@ class TestGpuSelection:
                 assert wait_for_idle_gpus(1) == ["1"]
         mock_sleep.assert_called_once_with(15)
 
+    def test_wait_for_idle_gpus_stops_after_three_failed_checks(self):
+        from orchestrator import wait_for_idle_gpus
+        with patch("orchestrator.select_idle_gpus", side_effect=[[], [], []]):
+            with patch("orchestrator.time.sleep") as mock_sleep:
+                assert wait_for_idle_gpus(2) == []
+        assert mock_sleep.call_count == 2
+
 
 class TestKillSglang:
     def test_terminates_running_process(self):
@@ -558,6 +565,22 @@ class TestRunSweep:
                                         run_sweep(cfg, ckpt)
         mock_sleep.assert_called_once_with(15)
         assert mock_start.call_args.args[-1] == ["0", "1"]
+
+    def test_skips_without_checkpoint_after_gpu_retry_budget_exhausted(self, tmp_path):
+        from orchestrator import run_sweep, Checkpoint
+        ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
+        cfg = {
+            "port": 30000,
+            "batch_sizes": [1],
+            "datasets": ["gsm8k"],
+            "models": [{"id": "org/modelA", "slug": "model_a", "tp": 1}],
+        }
+        with patch("orchestrator.select_idle_gpus", side_effect=[[], [], []]):
+            with patch("orchestrator.time.sleep"):
+                with patch("orchestrator.start_sglang") as mock_start:
+                    run_sweep(cfg, ckpt)
+        mock_start.assert_not_called()
+        assert ckpt._entries == []
 
     def test_records_oom_failure_when_sglang_exits_during_startup(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint

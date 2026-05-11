@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import json
 import yaml
 import pytest
 import tempfile
@@ -206,6 +207,42 @@ class TestStartSglang:
         assert "--mem-fraction-static" in cmd
         assert "0.9" in cmd
 
+    def test_gpu_ids_are_passed_as_cuda_visible_devices(self):
+        from orchestrator import start_sglang
+        with patch("orchestrator.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            start_sglang(
+                model_id="org/model",
+                tp=1,
+                batch_size=32,
+                gpu_ids=["1"],
+            )
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+class TestGpuSelection:
+    def test_selects_enough_idle_gpus(self, monkeypatch):
+        from orchestrator import select_idle_gpus
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        result = MagicMock(returncode=0, stdout="0, 200\n1, 900\n")
+        with patch("orchestrator.subprocess.run", return_value=result):
+            assert select_idle_gpus(2) == ["0", "1"]
+
+    def test_returns_empty_when_not_enough_idle_gpus(self, monkeypatch):
+        from orchestrator import select_idle_gpus
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        result = MagicMock(returncode=0, stdout="0, 200\n1, 42000\n")
+        with patch("orchestrator.subprocess.run", return_value=result):
+            assert select_idle_gpus(2) == []
+
+    def test_respects_numeric_cuda_visible_devices_filter(self, monkeypatch):
+        from orchestrator import select_idle_gpus
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+        result = MagicMock(returncode=0, stdout="0, 100\n1, 100\n")
+        with patch("orchestrator.subprocess.run", return_value=result):
+            assert select_idle_gpus(1) == ["1"]
+
 
 class TestKillSglang:
     def test_terminates_running_process(self):
@@ -346,6 +383,28 @@ class TestRunBenchmark:
         assert "--server-batch-size" in cmd
 
 
+class TestFailureRecords:
+    def test_persist_failure_record_writes_analyzable_artifact(self, tmp_path):
+        from orchestrator import persist_failure_record
+        dest = persist_failure_record(
+            model_id="org/model",
+            slug="model_a",
+            output_dir=str(tmp_path),
+            dataset="gsm8k",
+            batch_size=32,
+            tp=2,
+            status="oom",
+            error="likely startup OOM",
+            gpu_ids=["0", "1"],
+        )
+        payload = json.loads(dest.read_text())
+        assert dest.name.startswith("failure_gsm8k_")
+        assert payload["status"] == "oom"
+        assert payload["batch_size"] == 32
+        assert payload["tp"] == 2
+        assert payload["cuda_visible_devices"] == "0,1"
+
+
 # ─── Config Loading Tests ────────────────────────────────────────────────────
 
 class TestLoadSweepConfig:
@@ -395,7 +454,8 @@ class TestRunSweep:
             with patch("orchestrator.wait_for_health", return_value=False):
                 with patch("orchestrator.kill_sglang"):
                     with patch("orchestrator.wait_port_free", return_value=True):
-                        run_sweep(self._make_config(), ckpt)
+                        with patch("orchestrator.persist_failure_record"):
+                            run_sweep(self._make_config(), ckpt)
         assert not ckpt.is_done("model_a", 1, "gsm8k")
         assert not ckpt.is_done("model_a", 1, "numinamath")
         # Both should be recorded as failed, with slug as key and model_id as metadata
@@ -417,7 +477,8 @@ class TestRunSweep:
                 with patch("orchestrator.run_benchmark", return_value=1):
                     with patch("orchestrator.kill_sglang"):
                         with patch("orchestrator.wait_port_free", return_value=True):
-                            run_sweep(self._make_config(), ckpt)
+                            with patch("orchestrator.persist_failure_record"):
+                                run_sweep(self._make_config(), ckpt)
         assert not ckpt.is_done("model_a", 1, "gsm8k")
         assert not ckpt.is_done("model_a", 1, "numinamath")
 
@@ -464,6 +525,49 @@ class TestRunSweep:
         assert args[1] == 2  # tp=2
         assert ckpt.is_done("m_tp2", 1, "gsm8k")
 
+    def test_skips_without_checkpoint_when_not_enough_idle_gpus(self, tmp_path):
+        from orchestrator import run_sweep, Checkpoint
+        ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
+        cfg = {
+            "port": 30000,
+            "batch_sizes": [1],
+            "datasets": ["gsm8k"],
+            "models": [{"id": "org/modelA", "slug": "model_a", "tp": 2}],
+        }
+        with patch("orchestrator.select_idle_gpus", return_value=[]):
+            with patch("orchestrator.start_sglang") as mock_start:
+                run_sweep(cfg, ckpt)
+        mock_start.assert_not_called()
+        assert ckpt._entries == []
+
+    def test_records_oom_failure_when_sglang_exits_during_startup(self, tmp_path):
+        from orchestrator import run_sweep, Checkpoint
+        ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
+        proc = MagicMock()
+        proc.poll.return_value = 1
+        proc.returncode = 1
+        with patch("orchestrator.select_idle_gpus", return_value=["0", "1"]):
+            with patch("orchestrator.start_sglang", return_value=proc):
+                with patch("orchestrator.wait_for_health", return_value=False):
+                    with patch("orchestrator.kill_sglang"):
+                        with patch("orchestrator.wait_port_free", return_value=True):
+                            with patch("orchestrator.persist_failure_record") as mock_record:
+                                run_sweep(self._make_config(), ckpt)
+        assert mock_record.call_args.args[6] == "oom"
+        assert mock_record.call_args.args[8] == ["0", "1"]
+
+    def test_passes_selected_gpus_to_sglang(self, tmp_path):
+        from orchestrator import run_sweep, Checkpoint
+        ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
+        with patch("orchestrator.select_idle_gpus", return_value=["1"]):
+            with patch("orchestrator.start_sglang", return_value=MagicMock()) as mock_start:
+                with patch("orchestrator.wait_for_health", return_value=True):
+                    with patch("orchestrator.run_benchmark", return_value=0):
+                        with patch("orchestrator.kill_sglang"):
+                            with patch("orchestrator.wait_port_free", return_value=True):
+                                run_sweep(self._make_config(), ckpt)
+        assert mock_start.call_args.args[-1] == ["1"]
+
     def test_kill_sglang_called_in_finally_even_on_health_failure(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint
         ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
@@ -472,7 +576,8 @@ class TestRunSweep:
             with patch("orchestrator.wait_for_health", return_value=False):
                 with patch("orchestrator.kill_sglang") as mock_kill:
                     with patch("orchestrator.wait_port_free", return_value=True):
-                        run_sweep(self._make_config(), ckpt)
+                        with patch("orchestrator.persist_failure_record"):
+                            run_sweep(self._make_config(), ckpt)
         assert mock_kill.call_args_list == [call(mock_proc), call(mock_proc)]
 
 

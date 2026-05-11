@@ -45,13 +45,53 @@ def load_triple(leaf_dir: Path, bs_dir_name: str):
     records_file = find_latest_file(leaf_dir, "server_records_*.jsonl")
     if records_file is None:
         records_file = find_latest_file(leaf_dir, "detailed_results_*.jsonl")
+    failure_file = find_latest_file(leaf_dir, "failure_*.json")
 
     if meta_file is None:
-        warnings.warn(f"No metadata file in {leaf_dir} — skipping")
-        return None, None
+        if failure_file is None:
+            warnings.warn(f"No metadata file in {leaf_dir} — skipping")
+            return None, None
+        with open(failure_file) as f:
+            failure = json.load(f)
+        bs = failure.get("batch_size")
+        if bs is None:
+            try:
+                bs = int(bs_dir_name.lstrip("bs"))
+            except (ValueError, AttributeError):
+                warnings.warn(f"Cannot determine batch_size for {leaf_dir} — skipping")
+                return None, None
+        meta = {
+            "__failure__": failure,
+            "model_config": {
+                "model_name": failure.get("model", ""),
+            },
+            "hardware": {
+                "num_gpus": failure.get("tp", ""),
+            },
+            "system_environment": {
+                "batch_size": bs,
+            },
+        }
+        return meta, []
     if records_file is None:
-        warnings.warn(f"No server_records or detailed_results file in {leaf_dir} — skipping")
-        return None, None
+        if failure_file is None:
+            warnings.warn(f"No server_records or detailed_results file in {leaf_dir} — skipping")
+            return None, None
+        with open(failure_file) as f:
+            failure = json.load(f)
+        meta = {
+            "__failure__": failure,
+            "model_config": {
+                "model_name": failure.get("model", ""),
+            },
+            "hardware": {
+                "num_gpus": failure.get("tp", ""),
+            },
+            "system_environment": {
+                "batch_size": failure.get("batch_size"),
+            },
+        }
+        return meta, []
 
     with open(meta_file) as f:
         meta = json.load(f)
@@ -73,6 +113,28 @@ def load_triple(leaf_dir: Path, bs_dir_name: str):
                 records.append(json.loads(line))
 
     return meta, records
+
+
+def failure_metrics(metadata: dict) -> dict:
+    """Return CSV/plot metadata for a failed run artifact."""
+    failure = metadata.get("__failure__", {})
+    status = failure.get("status", "failed")
+    error = failure.get("error", "")
+    return {
+        "run_status": status,
+        "failure_reason": status,
+        "error": error,
+        "num_gpus": failure.get("tp", ""),
+        "cuda_visible_devices": failure.get("cuda_visible_devices", ""),
+        "prefill_tokens_per_sec": 0,
+        "decoding_tokens_per_sec": 0,
+        "prefill_raw_tflops": 0,
+        "decoding_raw_tflops": 0,
+        "prefill_smfu": 0,
+        "prefill_smbu": 0,
+        "decoding_smfu": 0,
+        "decoding_smbu": 0,
+    }
 
 
 def normalize_records(records: list) -> list:
@@ -233,6 +295,7 @@ def _copy_run_metadata(metrics: dict, metadata: dict, dataset_cfg: dict) -> None
     model_cfg = metadata.get("model_config", {})
     system = metadata.get("system_environment", {})
 
+    metrics.setdefault("run_status", "success")
     metrics["runner_mode"] = system.get("runner", "moe_cap.openai_api_profile")
     metrics["inference_engine"] = system.get("inference_engine", "")
     metrics["num_prompts"] = system.get("num_prompts", "")
@@ -368,6 +431,32 @@ def aggregate_by_dataset(raw: list) -> dict:
     return result
 
 
+def _failed_batches(bs_data: dict, status: str = "oom") -> list:
+    """Return batch sizes whose aggregated run_status includes the requested status."""
+    failed = []
+    for bs, metrics in bs_data.items():
+        statuses = str(metrics.get("run_status", "")).lower().split(";")
+        if status.lower() in statuses:
+            failed.append(bs)
+    return sorted(failed)
+
+
+def _plot_failure_markers(ax, batches: list, label: str = "OOM") -> None:
+    """Mark failed sweep cells at the plot baseline."""
+    if not batches:
+        return
+    ax.scatter(
+        batches,
+        [0] * len(batches),
+        marker="x",
+        s=80,
+        linewidths=2,
+        color="tab:red",
+        label=label,
+        zorder=5,
+    )
+
+
 def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
                             metric_label: str, metric_key: str, out_path: Path,
                             legacy_key: str = None) -> None:
@@ -393,6 +482,7 @@ def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
         vals = [bs_data[bs].get(metric_key, 0) for bs in bss]
         color = color_cycle[i % len(color_cycle)]
         ax.plot(bss, vals, "o-", color=color, label=slug)
+        _plot_failure_markers(ax, _failed_batches(bs_data), label=f"{slug} OOM")
 
         if legacy_key and any(legacy_key in bs_data[bs] for bs in bss):
             leg_vals = [bs_data[bs].get(legacy_key, 0) for bs in bss]
@@ -437,6 +527,7 @@ def plot_smfu_smbu_for_model(slug: str, dataset: str, bs_data: dict, out_path: P
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(batch_sizes, smfu_vals, "o-", color="tab:blue", label="S-MFU")
     ax.plot(batch_sizes, smbu_vals, "s-", color="tab:orange", label="S-MBU")
+    _plot_failure_markers(ax, _failed_batches(bs_data))
 
     if any("prefill_smfu_legacy" in bs_data[bs] for bs in batch_sizes):
         legacy_smfu = [bs_data[bs].get("prefill_smfu_legacy", 0) for bs in batch_sizes]
@@ -514,6 +605,7 @@ def write_raw_values(raw: list, out_path: Path) -> None:
     """
     metric_order = [
         # Run-shaping metadata
+        "run_status", "failure_reason", "error", "cuda_visible_devices",
         "runner_mode", "inference_engine", "num_prompts",
         "client_success_count", "client_fail_count",
         "chunked_prefill_size", "max_prefill_tokens", "mem_fraction_static",
@@ -600,6 +692,13 @@ def main() -> None:
     for slug, bs_dir_name, dataset, leaf_dir in walk_results(results_dir):
         meta, records = load_triple(leaf_dir, bs_dir_name)
         if meta is None:
+            continue
+
+        if "__failure__" in meta:
+            bs = meta["system_environment"]["batch_size"]
+            metrics = failure_metrics(meta)
+            raw.append((slug, bs, dataset, metrics))
+            print(f"  {slug} bs={bs} {dataset}: {metrics['run_status']} — {metrics['error']}")
             continue
 
         prefill_records = [r for r in records if r.get("forward_mode") == "prefill"]

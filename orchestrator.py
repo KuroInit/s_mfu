@@ -9,6 +9,7 @@ import sys
 import time
 import socket
 import subprocess
+import json
 from datetime import datetime
 from pathlib import Path
 import yaml
@@ -27,11 +28,85 @@ SGLANG_STARTUP_TIMEOUT = 1500  # 25 minutes — covers slow weight loads + warmu
 SGLANG_HEALTH_INTERVAL = 5     # seconds between health polls
 SGLANG_SHUTDOWN_GRACE = 30     # seconds before SIGKILL
 PORT_FREE_TIMEOUT = 60         # seconds to wait for port to clear
+GPU_FREE_MEMORY_USED_MB = int(os.environ.get("GPU_FREE_MEMORY_USED_MB", "1024"))
 
 
 def _disable_radix_cache_enabled() -> bool:
     """Return whether SGLang's prefix/radix cache should be disabled."""
     return os.environ.get("DISABLE_RADIX_CACHE", "1").lower() not in {"0", "false", "no"}
+
+
+def _auto_select_gpus_enabled() -> bool:
+    """Return whether the harness should bind each SGLang server to idle GPUs."""
+    return os.environ.get("AUTO_SELECT_GPUS", "1").lower() not in {"0", "false", "no"}
+
+
+def _cuda_visible_device_filter() -> Optional[set[str]]:
+    """Return an integer CUDA_VISIBLE_DEVICES allow-list, or None for all GPUs.
+
+    UUID/MIG forms are intentionally treated as unmanaged because nvidia-smi's
+    index query cannot map those safely without more platform-specific handling.
+    """
+    value = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if value is None:
+        return None
+    devices = [item.strip() for item in value.split(",") if item.strip()]
+    if not devices:
+        return set()
+    if not all(device.isdigit() for device in devices):
+        return None
+    return set(devices)
+
+
+def _query_gpu_memory_used_mb() -> Optional[list[tuple[str, int]]]:
+    """Return [(gpu_index, memory_used_mb), ...], or None when nvidia-smi is unavailable."""
+    cmd = [
+        "nvidia-smi",
+        "--query-gpu=index,memory.used",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    gpus: list[tuple[str, int]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            index, memory_used = [part.strip() for part in line.split(",", 1)]
+            gpus.append((index, int(memory_used)))
+        except ValueError:
+            return None
+    return gpus
+
+
+def select_idle_gpus(required: int) -> Optional[list[str]]:
+    """Pick physical GPU IDs with low memory use.
+
+    Returns:
+        - list[str]: enough idle GPU IDs were found
+        - []: GPU auto-selection works, but not enough GPUs are idle
+        - None: auto-selection is disabled or nvidia-smi is unavailable
+    """
+    if required <= 0 or not _auto_select_gpus_enabled():
+        return None
+
+    gpus = _query_gpu_memory_used_mb()
+    if gpus is None:
+        print("[gpu] nvidia-smi unavailable; leaving CUDA_VISIBLE_DEVICES unchanged")
+        return None
+
+    visible_filter = _cuda_visible_device_filter()
+    idle = [
+        index for index, memory_used in gpus
+        if (visible_filter is None or index in visible_filter)
+        and memory_used <= GPU_FREE_MEMORY_USED_MB
+    ]
+    return idle[:required] if len(idle) >= required else []
 
 
 # ─── Checkpoint ──────────────────────────────────────────────────────────────
@@ -114,6 +189,7 @@ def start_sglang(
     chunked_prefill_size: Optional[int] = None,
     max_prefill_tokens: Optional[int] = None,
     mem_fraction_static: Optional[float] = None,
+    gpu_ids: Optional[list[str]] = None,
 ) -> subprocess.Popen:
     """Launch the MoE-CAP SGLang server as a background subprocess."""
     cmd = [
@@ -133,8 +209,14 @@ def start_sglang(
         cmd += ["--max-prefill-tokens", str(max_prefill_tokens)]
     if mem_fraction_static is not None and mem_fraction_static > 0:
         cmd += ["--mem-fraction-static", str(mem_fraction_static)]
+    env = None
+    if gpu_ids is not None:
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_ids)
+        print(f"[gpu] Binding SGLang to physical GPU(s): {env['CUDA_VISIBLE_DEVICES']}")
+
     print(f"[sglang] Starting: {' '.join(cmd)}")
-    return subprocess.Popen(cmd)
+    return subprocess.Popen(cmd, env=env)
 
 
 def wait_for_health(
@@ -249,6 +331,38 @@ def persist_moe_cap_server_records(model_id: str, output_dir: str, dataset: str)
     dest = dest_dir / f"server_records_{dataset}_{ts}.jsonl"
     dest.write_text(src.read_text())
     print(f"[runner] preserved MoE-CAP server records at {dest}")
+    return dest
+
+
+def persist_failure_record(
+    model_id: str,
+    slug: str,
+    output_dir: str,
+    dataset: str,
+    batch_size: int,
+    tp: int,
+    status: str,
+    error: str,
+    gpu_ids: Optional[list[str]] = None,
+) -> Path:
+    """Write a minimal result artifact for runs that fail before metrics exist."""
+    dest_dir = Path(output_dir) / model_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = dest_dir / f"failure_{dataset}_{ts}.json"
+    payload = {
+        "status": status,
+        "error": error,
+        "dataset": dataset,
+        "slug": slug,
+        "model": model_id,
+        "batch_size": batch_size,
+        "tp": tp,
+        "cuda_visible_devices": ",".join(gpu_ids) if gpu_ids else "",
+        "timestamp": ts,
+    }
+    dest.write_text(json.dumps(payload, indent=2))
+    print(f"[runner] preserved failure record at {dest}")
     return dest
 
 
@@ -422,6 +536,16 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                 )
                 print(sep)
 
+                selected_gpus = select_idle_gpus(tp)
+                if selected_gpus == []:
+                    print(
+                        f"[gpu] Skipping {slug} bs={batch_size} {dataset}: "
+                        f"tp={tp} requires {tp} idle GPU(s), but fewer are free "
+                        f"(threshold={GPU_FREE_MEMORY_USED_MB}MB used)"
+                    )
+                    done += 1
+                    continue
+
                 proc = start_sglang(
                     model_id,
                     tp,
@@ -430,18 +554,25 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                     prefill_size,
                     max_prefill_tokens,
                     mem_fraction_static,
+                    selected_gpus,
                 )
                 try:
                     if not wait_for_health(port, proc=proc):
                         exit_code = proc.poll()
                         if exit_code is None:
                             error = f"SGLang failed to start within {SGLANG_STARTUP_TIMEOUT}s"
+                            status = "startup_failed"
                         else:
                             error = (
                                 f"SGLang exited during startup with code {exit_code}; "
                                 "likely startup OOM or scheduler initialization failure"
                             )
+                            status = "oom"
                         print(f"[sweep] ERROR: {error}")
+                        persist_failure_record(
+                            model_id, slug, output_dir, dataset, batch_size,
+                            tp, status, error, selected_gpus,
+                        )
                         checkpoint.mark(
                             slug, batch_size, dataset, "failed",
                             error,
@@ -457,9 +588,14 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                         checkpoint.mark(slug, batch_size, dataset, "success", model_id=model_id)
                         print(f"[sweep]   ✓ {dataset}")
                     else:
+                        error = f"Runner exited with code {rc}"
+                        persist_failure_record(
+                            model_id, slug, output_dir, dataset, batch_size,
+                            tp, "failed", error, selected_gpus,
+                        )
                         checkpoint.mark(
                             slug, batch_size, dataset, "failed",
-                            f"Runner exited with code {rc}",
+                            error,
                             model_id=model_id,
                         )
                         print(f"[sweep]   ✗ {dataset} (exit code {rc})")

@@ -81,6 +81,26 @@ def test_load_triple_returns_none_when_no_records(tmp_path):
     meta, records = load_triple(tmp_path, "bs32")
     assert meta is None and records is None
 
+def test_load_triple_reads_failure_without_metadata(tmp_path):
+    from analyze import load_triple, failure_metrics
+    (tmp_path / "failure_gsm8k_20240101_100000.json").write_text(json.dumps({
+        "status": "oom",
+        "error": "likely startup OOM",
+        "dataset": "gsm8k",
+        "slug": "model_a",
+        "model": "org/model",
+        "batch_size": 32,
+        "tp": 2,
+        "cuda_visible_devices": "0,1",
+    }))
+    meta, records = load_triple(tmp_path, "bs32")
+    metrics = failure_metrics(meta)
+    assert records == []
+    assert meta["__failure__"]["status"] == "oom"
+    assert meta["system_environment"]["batch_size"] == 32
+    assert metrics["run_status"] == "oom"
+    assert metrics["prefill_smfu"] == 0
+
 # ── normalize_records ──────────────────────────────────────────────────────────
 
 def test_normalize_prefill_record_uses_ttft():
@@ -545,6 +565,26 @@ def test_write_raw_values_includes_run_metadata_columns(tmp_path):
     assert rows[0]["chunked_prefill_size"] == "32768"
     assert rows[0]["max_prefill_tokens"] == "32768"
     assert rows[0]["mem_fraction_static"] == "0.9"
+
+
+def test_write_raw_values_includes_failure_columns(tmp_path):
+    from analyze import write_raw_values
+    import csv
+    raw = [
+        ("qwen3_next_80b", 64, "batched_prefill",
+         {"run_status": "oom", "failure_reason": "oom",
+          "error": "likely startup OOM", "cuda_visible_devices": "0,1",
+          "prefill_smfu": 0}),
+    ]
+    out = tmp_path / "raw_values.csv"
+    write_raw_values(raw, out)
+    with out.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    assert rows[0]["run_status"] == "oom"
+    assert rows[0]["failure_reason"] == "oom"
+    assert rows[0]["error"] == "likely startup OOM"
+    assert rows[0]["cuda_visible_devices"] == "0,1"
 
 
 def test_write_raw_values_includes_legacy_columns_when_present(tmp_path):

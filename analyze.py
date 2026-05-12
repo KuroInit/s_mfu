@@ -354,17 +354,22 @@ def _numeric_values(values: list) -> list:
     return result
 
 
-def _positive_axis_bounds(values: list, pad_fraction: float = 0.10) -> Optional[tuple[float, float]]:
-    """Return padded positive bounds for a log-scaled axis."""
-    numeric = [v for v in _numeric_values(values) if v > 0]
+def _x_axis_bounds(values: list, pad_fraction: float = 0.05) -> Optional[tuple[float, float]]:
+    """Return padded linear x-axis bounds."""
+    numeric = _numeric_values(values)
     if not numeric:
         return None
     lo = min(numeric)
     hi = max(numeric)
-    lower = lo / (1 + pad_fraction)
-    upper = hi * (1 + pad_fraction)
+    span = hi - lo
+    if span == 0:
+        pad = max(abs(hi) * pad_fraction, 1.0)
+    else:
+        pad = span * pad_fraction
+    lower = max(0, lo - pad)
+    upper = hi + pad
     if lower == upper:
-        upper = lower * (1 + pad_fraction)
+        upper = lower + 1
     return lower, upper
 
 
@@ -381,7 +386,7 @@ def _zero_based_upper(values: list, pad_fraction: float = 0.10) -> float:
 
 def _apply_plot_scale(ax, x_values: list, y_values: list) -> None:
     """Pad plot axes so max x/y values are inside, not on, the boundary."""
-    x_bounds = _positive_axis_bounds(x_values)
+    x_bounds = _x_axis_bounds(x_values)
     if x_bounds is not None:
         ax.set_xlim(*x_bounds)
     ax.set_ylim(0, _zero_based_upper(y_values))
@@ -410,7 +415,6 @@ def plot_single_metric(slug: str, bs_data: dict, metric_label: str,
         ax.plot(batch_sizes, leg_prefill, "o:", color="tab:blue", alpha=0.4,
                 label="Prefill (Qwen3 legacy)")
 
-    ax.set_xscale("log")
     ax.set_xticks(batch_sizes)
     ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax.set_xlabel("Batch Size")
@@ -519,7 +523,6 @@ def plot_metric_per_dataset(dataset: str, per_slug_bs_data: dict,
             ax.plot(bss, leg_vals, "o:", color=color, alpha=0.4,
                     label=f"{slug} (legacy)")
 
-    ax.set_xscale("log")
     ax.set_xticks(all_bs)
     ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax.set_xlabel("Batch Size")
@@ -567,7 +570,6 @@ def plot_smfu_smbu_for_model(slug: str, dataset: str, bs_data: dict, out_path: P
                 label="S-MBU (legacy)")
         y_vals.extend(legacy_smbu)
 
-    ax.set_xscale("log")
     ax.set_xticks(batch_sizes)
     ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax.set_xlabel("Batch Size")
@@ -605,7 +607,6 @@ def plot_legacy_comparison(slug: str, dataset: str, bs_data: dict,
     ax.plot(batch_sizes, current_vals, "o-", color="tab:blue", label="Current (Qwen3-Next path)")
     ax.plot(batch_sizes, legacy_vals, "s-", color="tab:orange", label="Legacy (Qwen3 path)")
 
-    ax.set_xscale("log")
     ax.set_xticks(batch_sizes)
     ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax.set_xlabel("Batch Size")

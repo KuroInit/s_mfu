@@ -221,6 +221,24 @@ class TestStartSglang:
         env = mock_popen.call_args.kwargs["env"]
         assert env["CUDA_VISIBLE_DEVICES"] == "1"
 
+    def test_sets_default_moe_cap_gpu_type(self, monkeypatch):
+        monkeypatch.delenv("MOE_CAP_GPU_TYPE", raising=False)
+        from orchestrator import start_sglang
+        with patch("orchestrator.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            start_sglang(model_id="org/model", tp=1, batch_size=32)
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["MOE_CAP_GPU_TYPE"] == "NVIDIA-H100-NVL-96GB"
+
+    def test_preserves_existing_moe_cap_gpu_type(self, monkeypatch):
+        monkeypatch.setenv("MOE_CAP_GPU_TYPE", "custom-gpu")
+        from orchestrator import start_sglang
+        with patch("orchestrator.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = MagicMock()
+            start_sglang(model_id="org/model", tp=1, batch_size=32)
+        env = mock_popen.call_args.kwargs["env"]
+        assert env["MOE_CAP_GPU_TYPE"] == "custom-gpu"
+
 
 class TestGpuSelection:
     def test_selects_enough_idle_gpus(self, monkeypatch):
@@ -437,6 +455,20 @@ class TestRunBenchmark:
         cmd = mock_run.call_args[0][0]
         assert cmd[1:3] == ["-m", "moe_cap.runner.openai_api_profile"]
         assert "--server-batch-size" in cmd
+
+    def test_sets_default_moe_cap_gpu_type(self, monkeypatch):
+        monkeypatch.delenv("MOE_CAP_GPU_TYPE", raising=False)
+        from orchestrator import run_benchmark
+        with patch("orchestrator.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            run_benchmark(
+                config_file="configs/longbench_v2_qwen3_30b.yaml",
+                batch_size=1,
+                output_dir="/results/qwen3_30b/bs1/longbench_v2/",
+                port=30000,
+            )
+        env = mock_run.call_args.kwargs["env"]
+        assert env["MOE_CAP_GPU_TYPE"] == "NVIDIA-H100-NVL-96GB"
 
 
 class TestFailureRecords:

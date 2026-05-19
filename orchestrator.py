@@ -10,6 +10,7 @@ import time
 import socket
 import subprocess
 import json
+from itertools import combinations
 from datetime import datetime
 from pathlib import Path
 import yaml
@@ -86,6 +87,63 @@ def _query_gpu_memory_used_mb() -> Optional[list[tuple[str, int]]]:
     return gpus
 
 
+def _query_gpu_p2p_write_matrix() -> Optional[dict[tuple[str, str], bool]]:
+    """Return GPU peer-write compatibility from nvidia-smi, or None if unavailable.
+
+    NCCL tensor parallel startup can fail with opaque internal errors when the
+    selected GPUs cannot do peer access. The topo query keeps auto-selection
+    from handing SGLang an incompatible TP group on mixed/shared hosts.
+    """
+    cmd = ["nvidia-smi", "topo", "-p2p", "w"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    lines = [line.split() for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+
+    headers = [item.removeprefix("GPU") for item in lines[0] if item.startswith("GPU")]
+    if not headers:
+        return None
+
+    matrix: dict[tuple[str, str], bool] = {}
+    for parts in lines[1:]:
+        row_label = parts[0]
+        if not row_label.startswith("GPU"):
+            continue
+        row_gpu = row_label.removeprefix("GPU")
+        values = parts[1:1 + len(headers)]
+        if len(values) != len(headers):
+            return None
+        for col_gpu, value in zip(headers, values):
+            if row_gpu == col_gpu:
+                continue
+            matrix[(row_gpu, col_gpu)] = value.upper() == "OK"
+    return matrix
+
+
+def _select_p2p_compatible_gpus(idle: list[str], required: int) -> list[str]:
+    """Return an idle GPU group that supports peer writes, or [] if none exists."""
+    if required <= 1:
+        return idle[:required]
+
+    p2p = _query_gpu_p2p_write_matrix()
+    if p2p is None:
+        return idle[:required]
+
+    for candidate in combinations(idle, required):
+        if all(
+            p2p.get((left, right), False) and p2p.get((right, left), False)
+            for left, right in combinations(candidate, 2)
+        ):
+            return list(candidate)
+    return []
+
+
 def select_idle_gpus(required: int) -> Optional[list[str]]:
     """Pick physical GPU IDs with low memory use.
 
@@ -108,7 +166,16 @@ def select_idle_gpus(required: int) -> Optional[list[str]]:
         if (visible_filter is None or index in visible_filter)
         and memory_used <= GPU_FREE_MEMORY_USED_MB
     ]
-    return idle[:required] if len(idle) >= required else []
+    if len(idle) < required:
+        return []
+
+    selected = _select_p2p_compatible_gpus(idle, required)
+    if selected == [] and required > 1:
+        print(
+            f"[gpu] Found {len(idle)} idle GPU(s), but no peer-access-compatible "
+            f"group for tp={required}"
+        )
+    return selected
 
 
 def wait_for_idle_gpus(required: int) -> Optional[list[str]]:

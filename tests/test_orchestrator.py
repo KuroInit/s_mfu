@@ -244,6 +244,37 @@ class TestGpuSelection:
         with patch("orchestrator.subprocess.run", return_value=result):
             assert select_idle_gpus(1) == ["1"]
 
+    def test_selects_peer_access_compatible_gpus_for_tp(self, monkeypatch):
+        from orchestrator import select_idle_gpus
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        memory = MagicMock(returncode=0, stdout="0, 100\n1, 100\n2, 100\n")
+        topo = MagicMock(
+            returncode=0,
+            stdout=(
+                "     GPU0 GPU1 GPU2\n"
+                "GPU0  X   X    OK\n"
+                "GPU1  X   X    X\n"
+                "GPU2  OK  X    X\n"
+            ),
+        )
+        with patch("orchestrator.subprocess.run", side_effect=[memory, topo]):
+            assert select_idle_gpus(2) == ["0", "2"]
+
+    def test_returns_empty_when_no_idle_peer_access_group_exists(self, monkeypatch):
+        from orchestrator import select_idle_gpus
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        memory = MagicMock(returncode=0, stdout="0, 100\n1, 100\n")
+        topo = MagicMock(
+            returncode=0,
+            stdout=(
+                "     GPU0 GPU1\n"
+                "GPU0  X   X\n"
+                "GPU1  X   X\n"
+            ),
+        )
+        with patch("orchestrator.subprocess.run", side_effect=[memory, topo]):
+            assert select_idle_gpus(2) == []
+
     def test_wait_for_idle_gpus_sleeps_and_retries(self):
         from orchestrator import wait_for_idle_gpus
         with patch("orchestrator.select_idle_gpus", side_effect=[[], ["1"]]):

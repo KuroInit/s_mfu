@@ -8,6 +8,51 @@ def test_h100_nvl_hardware_specs_are_registered():
     assert get_peak_flops(gpu_name, "float32") == 835e12
 
 
+def test_openai_api_profile_uses_gpu_type_env_override(monkeypatch):
+    from moe_cap.runner import openai_api_profile as profile
+
+    seen = {}
+
+    def fake_calculate_continuous_metrics(**kwargs):
+        seen["gpu_raw_type"] = kwargs["gpu_raw_type"]
+        return {"gpu_raw_type": kwargs["gpu_raw_type"]}
+
+    monkeypatch.setenv("MOE_CAP_GPU_TYPE", "NVIDIA-H100-NVL-96GB")
+    monkeypatch.setattr(profile, "_calculate_continuous_metrics", fake_calculate_continuous_metrics)
+
+    profiler = profile.OpenAIAPIMoEProfiler.__new__(profile.OpenAIAPIMoEProfiler)
+    profiler.n_layers = 1
+    profiler.d_model = 1
+    profiler.n_attn_heads = 1
+    profiler.d_head = 1
+    profiler.n_kv_heads = 1
+    profiler.d_ff = 1
+    profiler.model_info = object()
+    profiler.hf_model_name = "Qwen/Qwen1.5-MoE-A2.7B-Chat"
+    profiler.used_dtype = "bfloat16"
+    profiler.precision = 2
+
+    result = profiler.get_metrics(
+        results=[profile.RequestFuncOutput(success=True)],
+        prompt_lengths=[1],
+        batch_size=1,
+        server_records=[
+            {
+                "gpu_raw_type": "NVIDIA-H100-NVL-94GB",
+                "gpu_num": 1,
+                "forward_mode": "prefill",
+                "expert_activation": 0.1,
+                "latency": 1.0,
+                "batch_size": 1,
+                "seq_lens_sum": 1,
+            }
+        ],
+    )
+
+    assert seen["gpu_raw_type"] == "NVIDIA-H100-NVL-96GB"
+    assert result["gpu_raw_type"] == "NVIDIA-H100-NVL-96GB"
+
+
 def test_per_req_prefill_uses_packed_forward_throughput(monkeypatch):
     from moe_cap.utils import continuous_batching_utils as cb
 

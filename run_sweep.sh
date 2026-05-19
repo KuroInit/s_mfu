@@ -30,7 +30,6 @@ export RESULTS_DIR="${RESULTS_DIR:-${SCRIPT_DIR}/results}"
 export SWEEP_CONFIG="${SWEEP_CONFIG:-sweep_config.yaml}"
 export CHECKPOINT_PATH="${CHECKPOINT_PATH:-${RESULTS_DIR}/checkpoint.yaml}"
 export SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR="${RESULTS_DIR}/expert_records"
-export MOE_CAP_GPU_TYPE="${MOE_CAP_GPU_TYPE:-NVIDIA-H100-NVL-96GB}"
 
 echo "=== Environment ==="
 echo "  HF_HOME      = ${HF_HOME}"
@@ -38,7 +37,6 @@ echo "  RESULTS_DIR   = ${RESULTS_DIR}"
 echo "  SWEEP_CONFIG  = ${SWEEP_CONFIG}"
 echo "  CHECKPOINT    = ${CHECKPOINT_PATH}"
 echo "  EXPERT_RECORDS= ${SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR}"
-echo "  GPU_TYPE      = ${MOE_CAP_GPU_TYPE}"
 echo "==================="
 
 # ─── Create output directories ─────────────────────────────────────────────

@@ -32,14 +32,6 @@ PORT_FREE_TIMEOUT = 60         # seconds to wait for port to clear
 GPU_FREE_MEMORY_USED_MB = int(os.environ.get("GPU_FREE_MEMORY_USED_MB", "1024"))
 GPU_RETRY_INTERVAL_SECONDS = int(os.environ.get("GPU_RETRY_INTERVAL_SECONDS", "15"))
 GPU_MAX_IDLE_CHECKS = int(os.environ.get("GPU_MAX_IDLE_CHECKS", "3"))
-DEFAULT_MOE_CAP_GPU_TYPE = "NVIDIA-H100-NVL-96GB"
-
-
-def _subprocess_env() -> dict[str, str]:
-    """Return child-process env with a stable MoE-CAP GPU type default."""
-    env = os.environ.copy()
-    env.setdefault("MOE_CAP_GPU_TYPE", DEFAULT_MOE_CAP_GPU_TYPE)
-    return env
 
 
 def _disable_radix_cache_enabled() -> bool:
@@ -341,8 +333,9 @@ def start_sglang(
         cmd += ["--max-prefill-tokens", str(max_prefill_tokens)]
     if mem_fraction_static is not None and mem_fraction_static > 0:
         cmd += ["--mem-fraction-static", str(mem_fraction_static)]
-    env = _subprocess_env()
+    env = None
     if gpu_ids is not None:
+        env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_ids)
         print(f"[gpu] Binding SGLang to physical GPU(s): {env['CUDA_VISIBLE_DEVICES']}")
 
@@ -436,7 +429,7 @@ def run_benchmark(
         "--output_dir", output_dir,
     ]
     print(f"[runner] {' '.join(cmd)}")
-    result = subprocess.run(cmd, check=False, env=_subprocess_env())
+    result = subprocess.run(cmd, check=False)
     return result.returncode
 
 

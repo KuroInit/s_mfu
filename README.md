@@ -53,7 +53,6 @@ The Docker entrypoint runs the sweep. Run `analyze.py` afterward from the repo c
 - `GPU_RETRY_INTERVAL_SECONDS` — wait between idle-GPU checks (default: `15`).
 - `GPU_MAX_IDLE_CHECKS` — retry budget before a cell is skipped without checkpointing (default: `3`).
 - `ANALYZE_GPU_TYPE` — override GPU type for old result files whose records say `"Unknown"`; for example `NVIDIA-H100-NVL-96GB`.
-- `MOE_CAP_GPU_TYPE` — override the GPU type used by MoE-CAP during live runner metric calculation; for example `NVIDIA-H100-NVL-96GB`.
 
 ## `sweep_config.yaml`
 

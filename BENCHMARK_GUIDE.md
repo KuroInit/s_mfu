@@ -9,6 +9,13 @@ MoE-CAP-derived values.
 
 - `orchestrator.py` always uses `python -m moe_cap.runner.openai_api_profile`.
 - The sweep `batch_size` is passed to MoE-CAP as `--server-batch-size`.
+- SGLang starts with metrics and expert-distribution metrics enabled. Radix cache
+  is disabled by default; set `DISABLE_RADIX_CACHE=0` only for debugging cached-prefix behavior.
+- `chunked_prefill_size`, `max_prefill_tokens`, and `mem_fraction_static` are
+  explicit SGLang scheduling overrides. The harness does not infer them from
+  prompt length.
+- By default, the harness uses `nvidia-smi` to bind a server to idle physical
+  GPUs before startup. Disable this with `AUTO_SELECT_GPUS=0`.
 - The deleted harness-owned strict runner is no longer supported.
 - SGLang is restarted for every `(model, batch_size, dataset)` cell so expert
   records do not bleed between runs.
@@ -26,7 +33,12 @@ Outputs:
 - `smbu_<dataset>.png`
 - `raw_flops_<dataset>.png`
 - `tokens_per_sec_<dataset>.png`
-- matching decoding plots when decoding metrics are present
+- `decoding_smfu_<dataset>.png`
+- `decoding_smbu_<dataset>.png`
+- `decoding_raw_flops_<dataset>.png`
+- `decoding_tokens_per_sec_<dataset>.png`
+- `<slug>_smfu_smbu_<dataset>.png`
+- Qwen3-Next current-vs-legacy plots when the optional 80B model is present
 
 ## Memory Guardrails
 
@@ -34,6 +46,13 @@ The optional `gpu_memory_gb`, `max_context_tokens`, `weight_gb_per_gpu`, and
 `kv_bytes_per_token_per_gpu` sweep fields are preflight guardrails only. They do
 not participate in MoE-CAP metric math.
 
+The active sweep is sized for H100 NVL-class hosts and uses `gpu_memory_gb: 94`
+as a conservative usable-memory guardrail for the 96 GB SKU.
+
 If a run OOMs, lower `max_batch_size` or `target_input_tokens`. Use
 `chunked_prefill_size`, `max_prefill_tokens`, and `mem_fraction_static` only as
 explicit SGLang scheduling overrides.
+
+Failed startup, runner, and missing-server-record cells are written as
+`failure_<dataset>_<timestamp>.json` files so `analyze.py` can carry failure
+status into `raw_values.csv` and mark failed cells on plots.

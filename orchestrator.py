@@ -87,6 +87,33 @@ def _query_gpu_memory_used_mb() -> Optional[list[tuple[str, int]]]:
     return gpus
 
 
+def _query_mig_enabled_gpus() -> Optional[set[str]]:
+    """Return physical GPU indices with MIG enabled, or None when unavailable."""
+    cmd = [
+        "nvidia-smi",
+        "--query-gpu=index,mig.mode.current",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    mig_enabled: set[str] = set()
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            index, mig_mode = [part.strip() for part in line.split(",", 1)]
+        except ValueError:
+            return None
+        if mig_mode.lower() == "enabled":
+            mig_enabled.add(index)
+    return mig_enabled
+
+
 def _query_gpu_p2p_write_matrix() -> Optional[dict[tuple[str, str], bool]]:
     """Return GPU peer-write compatibility from nvidia-smi, or None if unavailable.
 
@@ -161,9 +188,13 @@ def select_idle_gpus(required: int) -> Optional[list[str]]:
         return None
 
     visible_filter = _cuda_visible_device_filter()
+    mig_enabled = _query_mig_enabled_gpus() or set()
+    if mig_enabled:
+        print(f"[gpu] Excluding MIG-enabled physical GPU(s): {','.join(sorted(mig_enabled))}")
     idle = [
         index for index, memory_used in gpus
         if (visible_filter is None or index in visible_filter)
+        and index not in mig_enabled
         and memory_used <= GPU_FREE_MEMORY_USED_MB
     ]
     if len(idle) < required:

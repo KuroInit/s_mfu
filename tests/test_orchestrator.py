@@ -248,6 +248,7 @@ class TestGpuSelection:
         from orchestrator import select_idle_gpus
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         memory = MagicMock(returncode=0, stdout="0, 100\n1, 100\n2, 100\n")
+        mig = MagicMock(returncode=0, stdout="0, Disabled\n1, Disabled\n2, Disabled\n")
         topo = MagicMock(
             returncode=0,
             stdout=(
@@ -257,13 +258,14 @@ class TestGpuSelection:
                 "GPU2  OK  X    X\n"
             ),
         )
-        with patch("orchestrator.subprocess.run", side_effect=[memory, topo]):
+        with patch("orchestrator.subprocess.run", side_effect=[memory, mig, topo]):
             assert select_idle_gpus(2) == ["0", "2"]
 
     def test_returns_empty_when_no_idle_peer_access_group_exists(self, monkeypatch):
         from orchestrator import select_idle_gpus
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
         memory = MagicMock(returncode=0, stdout="0, 100\n1, 100\n")
+        mig = MagicMock(returncode=0, stdout="0, Disabled\n1, Disabled\n")
         topo = MagicMock(
             returncode=0,
             stdout=(
@@ -272,8 +274,16 @@ class TestGpuSelection:
                 "GPU1  X   X\n"
             ),
         )
-        with patch("orchestrator.subprocess.run", side_effect=[memory, topo]):
+        with patch("orchestrator.subprocess.run", side_effect=[memory, mig, topo]):
             assert select_idle_gpus(2) == []
+
+    def test_excludes_mig_enabled_physical_gpus(self, monkeypatch):
+        from orchestrator import select_idle_gpus
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        memory = MagicMock(returncode=0, stdout="0, 100\n1, 100\n")
+        mig = MagicMock(returncode=0, stdout="0, Disabled\n1, Enabled\n")
+        with patch("orchestrator.subprocess.run", side_effect=[memory, mig]):
+            assert select_idle_gpus(1) == ["0"]
 
     def test_wait_for_idle_gpus_sleeps_and_retries(self):
         from orchestrator import wait_for_idle_gpus

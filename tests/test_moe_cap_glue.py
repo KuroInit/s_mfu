@@ -132,7 +132,7 @@ def test_continuous_prefill_kv_size_uses_processed_tokens_when_present():
     assert metrics["attention_score"] == 2e-12
 
 
-def test_prefill_smbu_is_latency_weighted(monkeypatch):
+def test_prefill_smfu_and_smbu_are_latency_weighted(monkeypatch):
     from moe_cap.utils import continuous_batching_utils as cb
 
     monkeypatch.setattr(cb, "_get_hardware_specs", lambda *_: {})
@@ -146,7 +146,7 @@ def test_prefill_smbu_is_latency_weighted(monkeypatch):
     )
 
     def fake_prefill_metrics(**kwargs):
-        return kwargs["ttft"], 0.0
+        return kwargs["ttft"], kwargs["ttft"]
 
     monkeypatch.setattr(cb, "_calculate_prefill_metrics", fake_prefill_metrics)
 
@@ -182,3 +182,57 @@ def test_prefill_smbu_is_latency_weighted(monkeypatch):
     )
 
     assert result["prefill_smbu"] == 2.5
+    assert result["prefill_smfu"] == 2.5
+
+
+def test_decoding_smfu_and_smbu_are_latency_weighted(monkeypatch):
+    from moe_cap.utils import continuous_batching_utils as cb
+
+    monkeypatch.setattr(cb, "_get_hardware_specs", lambda *_: {})
+    monkeypatch.setattr(cb, "_calculate_kv_size", lambda *_, **__: 1)
+    monkeypatch.setattr(cb, "_calculate_attention_size", lambda *_, **__: 1)
+    monkeypatch.setattr(cb, "_calculate_expert_config", lambda *_, **__: {})
+    monkeypatch.setattr(
+        cb,
+        "_process_outputs_continuous",
+        lambda out, *_, **__: {"true_kv_size": out["seq_lens_sum"], "attention_score": 0},
+    )
+
+    def fake_decoding_metrics(**kwargs):
+        return kwargs["tpot"], kwargs["tpot"]
+
+    monkeypatch.setattr(cb, "_calculate_decoding_metrics", fake_decoding_metrics)
+
+    result = cb._calculate_continuous_metrics(
+        n_layers=1,
+        d_model=1,
+        gpu_raw_type="gpu",
+        n_attn_heads=1,
+        d_head=1,
+        n_kv_heads=1,
+        d_ff=1,
+        hf_config=None,
+        num_gpus=1,
+        model_name="model",
+        used_dtype="bfloat16",
+        precision=2,
+        output_data=[
+            {
+                "forward_mode": "decode",
+                "expert_activation": 0.5,
+                "latency": 1.0,
+                "batch_size": 1,
+                "seq_lens_sum": 1,
+            },
+            {
+                "forward_mode": "decode",
+                "expert_activation": 0.5,
+                "latency": 3.0,
+                "batch_size": 1,
+                "seq_lens_sum": 1,
+            },
+        ],
+    )
+
+    assert result["decoding_smbu"] == 2.5
+    assert result["decoding_smfu"] == 2.5

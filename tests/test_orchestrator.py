@@ -466,7 +466,8 @@ class TestLoadSweepConfig:
         from orchestrator import load_sweep_config
         cfg_content = """
 batch_sizes: [1, 32]
-datasets: [gsm8k]
+benchmark_types:
+  reasoning: [gsm8k]
 port: 30000
 models:
   - id: Qwen/ModelA
@@ -488,7 +489,7 @@ class TestRunSweep:
         return {
             "port": 30000,
             "batch_sizes": [1],
-            "datasets": ["gsm8k", "numinamath"],
+            "benchmark_types": {"reasoning": ["gsm8k", "numinamath"]},
             "models": [{"id": "org/modelA", "slug": "model_a", "tp": 1}],
         }
 
@@ -558,7 +559,7 @@ class TestRunSweep:
         cfg = {
             "port": 30000,
             "batch_sizes": [1],
-            "datasets": ["gsm8k"],
+            "benchmark_types": {"reasoning": ["gsm8k"]},
             "models": [
                 {"id": "org/M", "slug": "m_tp1", "tp": 1, "config_slug": "m"},
                 {"id": "org/M", "slug": "m_tp2", "tp": 2, "config_slug": "m"},
@@ -589,7 +590,7 @@ class TestRunSweep:
         cfg = {
             "port": 30000,
             "batch_sizes": [1],
-            "datasets": ["gsm8k"],
+            "benchmark_types": {"reasoning": ["gsm8k"]},
             "models": [{"id": "org/modelA", "slug": "model_a", "tp": 2}],
         }
         with patch("orchestrator.select_idle_gpus", side_effect=[[], ["0", "1"]]):
@@ -611,7 +612,7 @@ class TestRunSweep:
         cfg = {
             "port": 30000,
             "batch_sizes": [1],
-            "datasets": ["gsm8k"],
+            "benchmark_types": {"reasoning": ["gsm8k"]},
             "models": [{"id": "org/modelA", "slug": "model_a", "tp": 1}],
         }
         with patch("orchestrator.select_idle_gpus", side_effect=[[], [], []]):
@@ -683,6 +684,7 @@ class TestRunSweep:
 class TestSweepConfigValidation:
     def _write_config(self, dir_path, name, **overrides):
         cfg = {
+            "benchmark_type": "prefill",
             "dataset_names": ["longbench_v2"],
             "metrics": [],
             "model_id": "org/modelA",
@@ -696,7 +698,7 @@ class TestSweepConfigValidation:
     def _make_sweep(self):
         return {
             "batch_sizes": [1],
-            "datasets": ["longbench_v2"],
+            "benchmark_types": {"prefill": ["longbench_v2"]},
             "models": [{"id": "org/modelA", "slug": "model_a", "tp": 1}],
         }
 
@@ -707,6 +709,98 @@ class TestSweepConfigValidation:
         self._write_config(configs, "longbench_v2_model_a")
         monkeypatch.chdir(tmp_path)
         validate_sweep_configs(self._make_sweep())
+
+    def test_validate_sweep_configs_accepts_reasoning_mmlu_pro_config(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(
+            configs,
+            "mmlu_pro_model_a",
+            benchmark_type="reasoning",
+            dataset_names=["mmlu-pro"],
+            fixed_length_mode=False,
+            target_input_tokens=None,
+            target_output_tokens=None,
+            metrics=["em"],
+        )
+        sweep = self._make_sweep()
+        sweep["benchmark_types"] = {"reasoning": ["mmlu_pro"]}
+        monkeypatch.chdir(tmp_path)
+        validate_sweep_configs(sweep)
+
+    def test_validate_sweep_configs_rejects_unknown_benchmark_type(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "longbench_v2_model_a", benchmark_type="unknown")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(self._make_sweep())
+
+    def test_validate_sweep_configs_requires_explicit_benchmark_type(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "longbench_v2_model_a", benchmark_type=None)
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(self._make_sweep())
+
+    def test_validate_sweep_configs_requires_benchmark_types(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "longbench_v2_model_a")
+        sweep = self._make_sweep()
+        sweep.pop("benchmark_types")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(sweep)
+
+    def test_validate_sweep_configs_rejects_duplicate_dataset_lanes(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "longbench_v2_model_a")
+        sweep = self._make_sweep()
+        sweep["benchmark_types"] = {
+            "prefill": ["longbench_v2"],
+            "reasoning": ["longbench_v2"],
+        }
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(sweep)
+
+    def test_validate_sweep_configs_rejects_benchmark_type_mismatch(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(configs, "longbench_v2_model_a")
+        sweep = self._make_sweep()
+        sweep["benchmark_types"] = {"reasoning": ["longbench_v2"]}
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(sweep)
+
+    def test_validate_sweep_configs_rejects_partial_token_window(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(
+            configs,
+            "mmlu_pro_model_a",
+            benchmark_type="reasoning",
+            dataset_names=["mmlu-pro"],
+            fixed_length_mode=False,
+            target_input_tokens=512,
+            target_output_tokens=None,
+        )
+        sweep = self._make_sweep()
+        sweep["benchmark_types"] = {"reasoning": ["mmlu_pro"]}
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            validate_sweep_configs(sweep)
 
     def test_validate_sweep_configs_fails_when_config_missing(self, tmp_path, monkeypatch):
         from orchestrator import validate_sweep_configs

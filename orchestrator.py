@@ -32,6 +32,7 @@ PORT_FREE_TIMEOUT = 60         # seconds to wait for port to clear
 GPU_FREE_MEMORY_USED_MB = int(os.environ.get("GPU_FREE_MEMORY_USED_MB", "1024"))
 GPU_RETRY_INTERVAL_SECONDS = int(os.environ.get("GPU_RETRY_INTERVAL_SECONDS", "15"))
 GPU_MAX_IDLE_CHECKS = int(os.environ.get("GPU_MAX_IDLE_CHECKS", "3"))
+SUPPORTED_BENCHMARK_TYPES = {"prefill", "chat", "reasoning", "agentic"}
 
 
 def _disable_radix_cache_enabled() -> bool:
@@ -551,14 +552,101 @@ def _estimate_per_gpu_memory_gb(model: dict, dataset_cfg: dict, batch_size: int)
     kv_bytes = model.get("kv_bytes_per_token_per_gpu")
     if weight_gb is None or kv_bytes is None:
         return None
-    tokens = int(dataset_cfg.get("target_input_tokens", 0)) + int(dataset_cfg.get("target_output_tokens", 0))
+    if dataset_cfg.get("target_input_tokens") is None:
+        return None
+    tokens = int(dataset_cfg.get("target_input_tokens", 0)) + int(
+        dataset_cfg.get("target_output_tokens", 0)
+    )
     kv_gb = tokens * batch_size * int(kv_bytes) / (1024 ** 3)
     return float(weight_gb) + kv_gb
 
 
+def _get_benchmark_type(dataset_cfg: dict) -> str:
+    """Return the harness benchmark category for a MoE-CAP dataset config."""
+    benchmark_type = dataset_cfg.get("benchmark_type")
+    if benchmark_type is None:
+        raise ValueError("must set benchmark_type")
+    benchmark_type = str(benchmark_type).lower()
+    if benchmark_type not in SUPPORTED_BENCHMARK_TYPES:
+        allowed = ", ".join(sorted(SUPPORTED_BENCHMARK_TYPES))
+        raise ValueError(
+            f"unsupported benchmark_type={benchmark_type!r}; expected one of {allowed}"
+        )
+    return benchmark_type
+
+
+def _benchmark_type_dataset_map(config: dict) -> dict[str, str]:
+    """Validate benchmark lanes and return active dataset -> benchmark type."""
+    lane_map = {}
+    benchmark_types = config.get("benchmark_types")
+    if not benchmark_types:
+        sys.exit("ERROR: sweep config must set benchmark_types")
+
+    for benchmark_type, datasets in benchmark_types.items():
+        benchmark_type = str(benchmark_type).lower()
+        if benchmark_type not in SUPPORTED_BENCHMARK_TYPES:
+            allowed = ", ".join(sorted(SUPPORTED_BENCHMARK_TYPES))
+            sys.exit(
+                f"ERROR: benchmark_types contains unsupported lane {benchmark_type!r}; "
+                f"expected one of {allowed}"
+            )
+        for dataset in datasets or []:
+            if dataset in lane_map:
+                sys.exit(
+                    f"ERROR: dataset {dataset!r} appears in multiple benchmark_types "
+                    f"({lane_map[dataset]!r} and {benchmark_type!r})"
+                )
+            lane_map[dataset] = benchmark_type
+
+    if not lane_map:
+        sys.exit("ERROR: benchmark_types must include at least one dataset")
+    return lane_map
+
+
+def _active_datasets(config: dict) -> list[str]:
+    """Return active datasets in benchmark_types declaration order."""
+    return list(_benchmark_type_dataset_map(config).keys())
+
+
+def _validate_token_window(
+    config_file: str,
+    cfg: dict,
+    benchmark_type: str,
+) -> Optional[int]:
+    """Validate optional fixed token fields and return total token window when known."""
+    input_tokens = cfg.get("target_input_tokens")
+    output_tokens = cfg.get("target_output_tokens")
+
+    if benchmark_type == "prefill":
+        if not cfg.get("fixed_length_mode", False):
+            sys.exit(f"ERROR: {config_file} must set fixed_length_mode: true")
+        if input_tokens is None:
+            sys.exit(f"ERROR: {config_file} must set target_input_tokens")
+        if output_tokens is None or int(output_tokens) <= 0:
+            sys.exit(f"ERROR: {config_file} must set positive target_output_tokens")
+        return int(input_tokens) + int(output_tokens)
+
+    if cfg.get("fixed_length_mode", False):
+        sys.exit(
+            f"ERROR: {config_file} non-prefill benchmarks must set "
+            "fixed_length_mode: false"
+        )
+    if (input_tokens is None) != (output_tokens is None):
+        sys.exit(
+            f"ERROR: {config_file} must set both target_input_tokens and "
+            "target_output_tokens, or neither"
+        )
+    if input_tokens is not None:
+        if int(input_tokens) <= 0 or int(output_tokens) <= 0:
+            sys.exit(f"ERROR: {config_file} must set positive target token fields")
+        return int(input_tokens) + int(output_tokens)
+    return None
+
+
 def validate_sweep_configs(config: dict) -> None:
     """Fail fast before launching any server if sweep dataset configs are invalid."""
-    datasets = config.get("datasets", [])
+    benchmark_type_map = _benchmark_type_dataset_map(config)
+    datasets = list(benchmark_type_map.keys())
     batch_sizes = config.get("batch_sizes", [])
     gpu_memory_gb = float(config.get("gpu_memory_gb", 94))
     for model in config.get("models", []):
@@ -574,15 +662,25 @@ def validate_sweep_configs(config: dict) -> None:
                     f"ERROR: {config_file} model_id={cfg.get('model_id')!r} "
                     f"does not match sweep model {model_id!r}"
                 )
-            if not cfg.get("fixed_length_mode", False):
-                sys.exit(f"ERROR: {config_file} must set fixed_length_mode: true")
-            if cfg.get("target_input_tokens") is None:
-                sys.exit(f"ERROR: {config_file} must set target_input_tokens")
-            if int(cfg.get("target_output_tokens", 0)) <= 0:
-                sys.exit(f"ERROR: {config_file} must set positive target_output_tokens")
+            try:
+                benchmark_type = _get_benchmark_type(cfg)
+            except ValueError as exc:
+                sys.exit(f"ERROR: {config_file} {exc}")
+            if benchmark_type_map.get(dataset) != benchmark_type:
+                sys.exit(
+                    f"ERROR: {config_file} benchmark_type={benchmark_type!r} "
+                    f"does not match sweep benchmark_types[{dataset!r}]="
+                    f"{benchmark_type_map.get(dataset)!r}"
+                )
+            if not cfg.get("dataset_names"):
+                sys.exit(f"ERROR: {config_file} must set dataset_names")
+            total_tokens = _validate_token_window(config_file, cfg, benchmark_type)
             max_context = model.get("max_context_tokens")
-            total_tokens = int(cfg["target_input_tokens"]) + int(cfg["target_output_tokens"])
-            if max_context is not None and total_tokens > int(max_context):
+            if (
+                max_context is not None
+                and total_tokens is not None
+                and total_tokens > int(max_context)
+            ):
                 sys.exit(
                     f"ERROR: {config_file} requests {total_tokens} total tokens, "
                     f"but {model_id} max_context_tokens={max_context}"
@@ -615,7 +713,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
     port = config.get("port", SGLANG_PORT)
     models = config["models"]
     batch_sizes = config["batch_sizes"]
-    datasets = config["datasets"]
+    datasets = _active_datasets(config)
 
     total = len(models) * len(batch_sizes) * len(datasets)
     done = 0

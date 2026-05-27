@@ -7,22 +7,29 @@ def _load_yaml(path: str):
         return yaml.safe_load(f) or {}
 
 
+def _active_datasets(sweep: dict):
+    from orchestrator import _active_datasets
+
+    return _active_datasets(sweep)
+
+
 def test_active_sweep_requests_fit_model_context_windows():
     sweep = _load_yaml("sweep_config.yaml")
 
     assert [model["slug"] for model in sweep["models"]] == [
         "qwen1_5_moe",
         "qwen3_30b",
-        "deepseek_v2_lite",
-        "deepseek_moe_16b_chat",
+        "qwen3_next_80b",
     ]
 
     for model in sweep["models"]:
-        for dataset in sweep["datasets"]:
+        for dataset in _active_datasets(sweep):
             cfg = _load_yaml(f"configs/{dataset}_{model['slug']}.yaml")
             input_tokens = cfg["target_input_tokens"]
             output_tokens = cfg["target_output_tokens"]
             max_context = model["max_context_tokens"]
+            if input_tokens is None and output_tokens is None:
+                continue
 
             assert input_tokens + output_tokens <= max_context, (
                 f"{cfg['model_id']} requests {input_tokens}+{output_tokens} tokens, "
@@ -57,11 +64,13 @@ def test_active_sweep_batch_cells_fit_h100_nvl_memory_estimate():
     sweep = _load_yaml("sweep_config.yaml")
     gpu_memory_gb = sweep["gpu_memory_gb"]
     for model in sweep["models"]:
-        for dataset in sweep["datasets"]:
+        for dataset in _active_datasets(sweep):
             cfg = _load_yaml(f"configs/{dataset}_{model['slug']}.yaml")
             for bs in _effective_batch_sizes(sweep["batch_sizes"], cfg):
                 estimated = _estimate_per_gpu_memory_gb(model, cfg, bs)
-                assert estimated is not None
+                if cfg["target_input_tokens"] is None:
+                    assert estimated is None
+                    continue
                 assert estimated <= gpu_memory_gb, (
                     f"{model['id']} bs={bs} needs ~{estimated:.1f}GB/GPU "
                     f"on a {gpu_memory_gb}GB H100 NVL"

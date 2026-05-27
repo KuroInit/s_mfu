@@ -1,16 +1,16 @@
-# Batched prefill: 1K input × N concurrent requests packed into scheduling
-# chunks. Qwen3-Next is memory-tight at startup, so use an 8K chunk: bs=2..8
-# run as one physical prefill chunk while bs=16..128 exercise chunking.
-dataset_names: ["longbench_v2"]
+benchmark_type: prefill
+dataset_names:
+- longbench_v2
 metrics: []
 model_id: Qwen/Qwen3-Next-80B-A3B-Instruct
 precision: bfloat16
 dataset_split: train
 num_samples: 200
-
 fixed_length_mode: true
 target_input_tokens: 1024
 target_output_tokens: 1
-chunked_prefill_size: 8192
-max_batch_size: 256
 prefill_mode: batched
+chunked_prefill_size: 8192
+max_prefill_tokens: null
+mem_fraction_static: null
+max_batch_size: 256

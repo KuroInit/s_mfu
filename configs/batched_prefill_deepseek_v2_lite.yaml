@@ -1,15 +1,16 @@
-# Batched prefill: 1K input × N concurrent requests packed into scheduling
-# chunks. A 32K chunk lets bs=2..32 run as one physical prefill chunk while
-# bs=64/128 intentionally exercise chunked-prefill pressure.
-dataset_names: ["longbench_v2"]
+benchmark_type: prefill
+dataset_names:
+- longbench_v2
 metrics: []
 model_id: deepseek-ai/DeepSeek-V2-Lite-Chat
 precision: bfloat16
 dataset_split: train
 num_samples: 200
-
 fixed_length_mode: true
 target_input_tokens: 1024
 target_output_tokens: 1
-chunked_prefill_size: 32768
 prefill_mode: batched
+chunked_prefill_size: 32768
+max_prefill_tokens: null
+mem_fraction_static: null
+max_batch_size: null

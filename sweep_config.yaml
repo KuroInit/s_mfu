@@ -1,11 +1,20 @@
-# Batched-prefill MoE-CAP metric sweep.
+# S-MFU/S-MBU MoE-CAP metric sweep.
 #
 # Use the batched_prefill_* configs instead of longbench_v2_* so the sweep
 # changes the physical prefill batch that SGLang packs into a forward pass.
 # The longbench_v2 configs use one huge prompt per request, which tends to
 # saturate at low concurrency and hides the expected rise/plateau/collapse.
+#
+# Benchmark lanes:
+#   chat: share-gpt / azure-style chat configs once MoE-CAP loaders exist
+#   reasoning: mmlu_pro (uses MoE-CAP's existing mmlu-pro loader)
+#   agentic: swe_bench configs once a MoE-CAP loader exists
 batch_sizes: [2,4,8,16,32,64,128,256]
-datasets: [batched_prefill]
+benchmark_types:
+  prefill: [batched_prefill]
+  chat: []
+  reasoning: [mmlu_pro]
+  agentic: []
 port: 30000
 gpu_memory_gb: 94
 
@@ -23,14 +32,6 @@ models:
     max_context_tokens: 40960
     weight_gb_per_gpu: 60.0
     kv_bytes_per_token_per_gpu: 98304
-
-
-  - id: deepseek-ai/deepseek-moe-16b-chat
-    tp: 1
-    slug: deepseek_moe_16b_chat
-    max_context_tokens: 4096
-    weight_gb_per_gpu: 32.0
-    kv_bytes_per_token_per_gpu: 65536
 
   - id: Qwen/Qwen3-Next-80B-A3B-Instruct
     tp: 2

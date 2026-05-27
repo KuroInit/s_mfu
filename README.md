@@ -56,11 +56,15 @@ The Docker entrypoint runs the sweep. Run `analyze.py` afterward from the repo c
 
 ## `sweep_config.yaml`
 
-Current batched-prefill scope:
+Current active sweep scope:
 
 ```yaml
 batch_sizes: [2, 4, 8, 16, 32, 64, 128, 256]
-datasets: [batched_prefill]
+benchmark_types:
+  prefill: [batched_prefill]
+  chat: []
+  reasoning: [mmlu_pro]
+  agentic: []
 port: 30000
 gpu_memory_gb: 94
 
@@ -77,18 +81,12 @@ models:
     max_context_tokens: 40960
     weight_gb_per_gpu: 60.0
     kv_bytes_per_token_per_gpu: 98304
-  - id: deepseek-ai/DeepSeek-V2-Lite-Chat
-    tp: 1
-    slug: deepseek_v2_lite
-    max_context_tokens: 163840
-    weight_gb_per_gpu: 31.4
-    kv_bytes_per_token_per_gpu: 31744
-  - id: deepseek-ai/deepseek-moe-16b-chat
-    tp: 1
-    slug: deepseek_moe_16b_chat
-    max_context_tokens: 4096
-    weight_gb_per_gpu: 32.0
-    kv_bytes_per_token_per_gpu: 65536
+  - id: Qwen/Qwen3-Next-80B-A3B-Instruct
+    tp: 2
+    slug: qwen3_next_80b
+    max_context_tokens: 262144
+    weight_gb_per_gpu: 74.3
+    kv_bytes_per_token_per_gpu: 49152
 ```
 
 - `tp` is set by necessity only — TP=1 unless the model won't fit on one GPU.
@@ -98,8 +96,26 @@ models:
 - Optional `chunked_prefill_size`, `max_prefill_tokens`, and `mem_fraction_static` can be set per model or dataset when an operator needs explicit SGLang scheduling overrides.
 - SGLang radix/prefix caching is disabled by default with `--disable-radix-cache`; set `DISABLE_RADIX_CACHE=0` only for debugging cached-prefix behavior, not for S-MFU/S-MBU measurements.
 
-The active sweep includes Qwen MoE, DeepSeek-V2-Lite, and the original
-DeepSeekMoE 16B chat model.
+Benchmark lanes are declared with `benchmark_types`; this is the source of truth
+for which datasets the harness runs:
+
+- `prefill` — fixed-length packed-prefill measurement configs such as `batched_prefill`.
+- `chat` — intended for ShareGPT / Azure-style chat traces once corresponding MoE-CAP loaders are available.
+- `reasoning` — ready to run through `mmlu_pro`, backed by MoE-CAP's existing `mmlu-pro` loader.
+- `agentic` — intended for SWE-Bench once a corresponding MoE-CAP loader is available.
+
+To choose what runs, put the dataset slug in exactly one lane. Leave a lane
+empty to skip it:
+
+```yaml
+benchmark_types:
+  prefill: [batched_prefill]
+  chat: []
+  reasoning: [mmlu_pro]
+  agentic: []
+```
+
+The active sweep includes Qwen MoE, Qwen3-30B, and Qwen3-Next-80B.
 
 ## `configs/`
 
@@ -107,14 +123,18 @@ Each active `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the 
 
 Active batched-prefill configs use fixed-length prompts and `target_output_tokens: 1`, so the run stays focused on packed prefill while MoE-CAP can still record decode steps when present.
 
+Reasoning configs use `benchmark_type: reasoning` and can run without
+`fixed_length_mode`; the included `mmlu_pro_*` configs set `dataset_names:
+["mmlu-pro"]`, `metrics: ["em"]`, and `num_samples: 200`. For non-fixed
+reasoning runs, MoE-CAP's dataset loader controls the generation cap.
+
 | Config | Input tokens | Chunking / caps |
 | --- | ---: | --- |
 | `batched_prefill_qwen1_5_moe.yaml` | 2048 | `chunked_prefill_size: 131072`, `max_prefill_tokens: 131072`, `mem_fraction_static: 0.9` |
 | `batched_prefill_qwen3_30b.yaml` | 2048 | `chunked_prefill_size: 16384`, `max_batch_size: 128` |
-| `batched_prefill_deepseek_v2_lite.yaml` | 1024 | `chunked_prefill_size: 32768` |
-| `batched_prefill_deepseek_moe_16b_chat.yaml` | 2048 | `chunked_prefill_size: 32768`, `max_batch_size: 128` |
+| `batched_prefill_qwen3_next_80b.yaml` | 1024 | `chunked_prefill_size: 8192`, `max_batch_size: 256` |
 
-`batched_prefill_qwen3_next_80b.yaml` is kept for optional TP=2 experiments and is paired with the commented Qwen3-Next model entry in `sweep_config.yaml`.
+`batched_prefill_deepseek_v2_lite.yaml` is still available for optional DeepSeek-V2-Lite runs, but it is not enabled in the default sweep.
 
 ## How it works
 

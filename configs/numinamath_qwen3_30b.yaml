@@ -1,9 +1,18 @@
-dataset_names: ["numinamath"]
-metrics: ["em", "f1"]
+benchmark_type: reasoning
+dataset_names:
+- numinamath
+metrics:
+- em
+- f1
 model_id: Qwen/Qwen3-30B-A3B
 precision: bfloat16
 dataset_split: test
 num_samples: 200
-
-fixed_length_mode: true
-target_output_tokens: 1
+fixed_length_mode: false
+target_input_tokens: null
+target_output_tokens: null
+prefill_mode: null
+chunked_prefill_size: null
+max_prefill_tokens: null
+mem_fraction_static: null
+max_batch_size: null

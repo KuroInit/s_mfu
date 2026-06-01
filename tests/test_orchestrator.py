@@ -384,7 +384,7 @@ class TestRunBenchmark:
         with patch("orchestrator.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             rc = run_benchmark(
-                config_file="configs/gsm8k_qwen3_30b.yaml",
+                config_file="configs/gsm8k.yaml",
                 batch_size=32,
                 output_dir="/results/qwen3_30b/bs32/gsm8k/",
                 port=30000,
@@ -396,7 +396,7 @@ class TestRunBenchmark:
         with patch("orchestrator.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1)
             rc = run_benchmark(
-                config_file="configs/gsm8k_qwen3_30b.yaml",
+                config_file="configs/gsm8k.yaml",
                 batch_size=32,
                 output_dir="/results/qwen3_30b/bs32/gsm8k/",
                 port=30000,
@@ -408,14 +408,14 @@ class TestRunBenchmark:
         with patch("orchestrator.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             run_benchmark(
-                config_file="configs/gsm8k_qwen3_30b.yaml",
+                config_file="configs/gsm8k.yaml",
                 batch_size=64,
                 output_dir="/results/qwen3_30b/bs64/gsm8k/",
                 port=30000,
             )
         cmd = mock_run.call_args[0][0]
         assert "--config-file" in cmd
-        assert "configs/gsm8k_qwen3_30b.yaml" in cmd
+        assert "configs/gsm8k.yaml" in cmd
         assert "--server-batch-size" in cmd
         assert "64" in cmd
         assert "--backend" in cmd
@@ -428,7 +428,7 @@ class TestRunBenchmark:
         with patch("orchestrator.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             run_benchmark(
-                config_file="configs/longbench_v2_qwen3_30b.yaml",
+                config_file="configs/longbench_v2.yaml",
                 batch_size=1,
                 output_dir="/results/qwen3_30b/bs1/longbench_v2/",
                 port=30000,
@@ -436,6 +436,21 @@ class TestRunBenchmark:
         cmd = mock_run.call_args[0][0]
         assert cmd[1:3] == ["-m", "moe_cap.runner.openai_api_profile"]
         assert "--server-batch-size" in cmd
+
+    def test_chat_config_uses_harness_runner_and_chat_api(self):
+        from orchestrator import run_benchmark
+        with patch("orchestrator.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            run_benchmark(
+                config_file="configs/sharegpt.yaml",
+                batch_size=8,
+                output_dir="/results/qwen3_30b/bs8/sharegpt/",
+                port=30000,
+            )
+        cmd = mock_run.call_args[0][0]
+        assert cmd[1:3] == ["-m", "s_mfu_moe_cap_runner"]
+        assert "http://localhost:30000/v1/chat/completions" in cmd
+        assert "--use-chat-api" in cmd
 
 class TestFailureRecords:
     def test_persist_failure_record_writes_analyzable_artifact(self, tmp_path):
@@ -710,6 +725,49 @@ class TestSweepConfigValidation:
         monkeypatch.chdir(tmp_path)
         validate_sweep_configs(self._make_sweep())
 
+    def test_validate_sweep_configs_accepts_shared_dataset_config(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(
+            configs,
+            "longbench_v2",
+            model_id=None,
+            model_overrides={
+                "model_a": {
+                    "target_input_tokens": 1024,
+                    "max_batch_size": 4,
+                }
+            },
+        )
+        sweep = self._make_sweep()
+        sweep["models"][0].update({
+            "max_context_tokens": 2048,
+            "weight_gb_per_gpu": 1.0,
+            "kv_bytes_per_token_per_gpu": 1,
+        })
+        monkeypatch.chdir(tmp_path)
+        validate_sweep_configs(sweep)
+
+    def test_write_effective_dataset_config_materializes_model_id(self, tmp_path):
+        from orchestrator import _write_effective_dataset_config
+
+        dest = _write_effective_dataset_config(
+            str(tmp_path),
+            "gsm8k",
+            {
+                "benchmark_type": "reasoning",
+                "dataset_names": ["gsm8k"],
+                "model_id": "org/modelA",
+                "model_overrides": {"model_a": {"max_batch_size": 4}},
+            },
+        )
+        with open(dest) as f:
+            payload = yaml.safe_load(f)
+
+        assert payload["model_id"] == "org/modelA"
+        assert "model_overrides" not in payload
+
     def test_validate_sweep_configs_accepts_reasoning_mmlu_pro_config(self, tmp_path, monkeypatch):
         from orchestrator import validate_sweep_configs
         configs = tmp_path / "configs"
@@ -726,6 +784,25 @@ class TestSweepConfigValidation:
         )
         sweep = self._make_sweep()
         sweep["benchmark_types"] = {"reasoning": ["mmlu_pro"]}
+        monkeypatch.chdir(tmp_path)
+        validate_sweep_configs(sweep)
+
+    def test_validate_sweep_configs_accepts_chat_config(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(
+            configs,
+            "sharegpt_model_a",
+            benchmark_type="chat",
+            dataset_names=["sharegpt"],
+            fixed_length_mode=False,
+            target_input_tokens=None,
+            target_output_tokens=None,
+            metrics=[],
+        )
+        sweep = self._make_sweep()
+        sweep["benchmark_types"] = {"chat": ["sharegpt"]}
         monkeypatch.chdir(tmp_path)
         validate_sweep_configs(sweep)
 

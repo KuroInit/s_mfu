@@ -421,14 +421,21 @@ def run_benchmark(
     port: int = SGLANG_PORT,
 ) -> int:
     """Invoke MoE-CAP's OpenAI API profiler and return its exit code."""
+    dataset_cfg = _load_dataset_config(config_file)
+    benchmark_type = dataset_cfg.get("benchmark_type")
+    is_chat = benchmark_type == "chat"
+    module = "s_mfu_moe_cap_runner" if is_chat else "moe_cap.runner.openai_api_profile"
+    endpoint = "chat/completions" if is_chat else "completions"
     cmd = [
-        sys.executable, "-m", "moe_cap.runner.openai_api_profile",
+        sys.executable, "-m", module,
         "--config-file", config_file,
-        "--api-url", f"http://localhost:{port}/v1/completions",
+        "--api-url", f"http://localhost:{port}/v1/{endpoint}",
         "--backend", "sglang",
         "--server-batch-size", str(batch_size),
         "--output_dir", output_dir,
     ]
+    if is_chat:
+        cmd.append("--use-chat-api")
     print(f"[runner] {' '.join(cmd)}")
     result = subprocess.run(cmd, check=False)
     return result.returncode
@@ -510,6 +517,57 @@ def _load_dataset_config(config_file: str) -> dict:
     """Load one MoE-CAP benchmark YAML."""
     with open(config_file, "r") as f:
         return yaml.safe_load(f) or {}
+
+
+def _dataset_config_file(dataset: str, model: dict) -> str:
+    """Return shared dataset config path, falling back to legacy per-model files."""
+    shared = f"configs/{dataset}.yaml"
+    if os.path.exists(shared):
+        return shared
+    config_slug = model.get("config_slug", model["slug"])
+    return f"configs/{dataset}_{config_slug}.yaml"
+
+
+def _apply_model_overrides(dataset_cfg: dict, model: dict) -> dict:
+    """Merge model-specific config exceptions into a shared dataset config."""
+    merged = {
+        key: value
+        for key, value in dataset_cfg.items()
+        if key != "model_overrides"
+    }
+    overrides = dataset_cfg.get("model_overrides") or {}
+    override_keys = [
+        model.get("config_slug"),
+        model.get("slug"),
+        model.get("id"),
+    ]
+    for key in override_keys:
+        if key and key in overrides:
+            merged.update(overrides[key] or {})
+            break
+    if not merged.get("model_id"):
+        merged["model_id"] = model["id"]
+    return merged
+
+
+def _load_effective_dataset_config(dataset: str, model: dict) -> tuple[str, dict]:
+    """Load dataset config and return the per-model effective config."""
+    config_file = _dataset_config_file(dataset, model)
+    return config_file, _apply_model_overrides(_load_dataset_config(config_file), model)
+
+
+def _write_effective_dataset_config(output_dir: str, dataset: str, cfg: dict) -> str:
+    """Materialize the MoE-CAP config used for one model/dataset run."""
+    dest_dir = Path(output_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"effective_config_{dataset}.yaml"
+    effective_cfg = {
+        key: value
+        for key, value in cfg.items()
+        if key != "model_overrides"
+    }
+    dest.write_text(yaml.safe_dump(effective_cfg, sort_keys=False))
+    return str(dest)
 
 
 def _get_explicit_chunked_prefill_size(model: dict, dataset_cfg: dict) -> Optional[int]:
@@ -651,12 +709,11 @@ def validate_sweep_configs(config: dict) -> None:
     gpu_memory_gb = float(config.get("gpu_memory_gb", 94))
     for model in config.get("models", []):
         model_id = model["id"]
-        config_slug = model.get("config_slug", model["slug"])
         for dataset in datasets:
-            config_file = f"configs/{dataset}_{config_slug}.yaml"
+            config_file = _dataset_config_file(dataset, model)
             if not os.path.exists(config_file):
                 sys.exit(f"ERROR: Missing benchmark config: {config_file}")
-            cfg = _load_dataset_config(config_file)
+            cfg = _apply_model_overrides(_load_dataset_config(config_file), model)
             if cfg.get("model_id") != model_id:
                 sys.exit(
                     f"ERROR: {config_file} model_id={cfg.get('model_id')!r} "
@@ -722,10 +779,6 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
         model_id = model["id"]
         slug = model["slug"]
         tp = model["tp"]
-        # config_slug controls which configs/<dataset>_<config_slug>.yaml files are
-        # read. Defaults to slug — set explicitly when multiple sweep entries share
-        # the same dataset configs (e.g., tp=1 and tp=2 variants of one model).
-        config_slug = model.get("config_slug", slug)
 
         for batch_size in batch_sizes:
             for dataset in datasets:
@@ -734,11 +787,19 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                     done += 1
                     continue
 
-                config_file = f"configs/{dataset}_{config_slug}.yaml"
                 output_dir = f"{RESULTS_DIR}/{slug}/bs{batch_size}/{dataset}/"
-                dataset_cfg = _load_dataset_config(config_file) if os.path.exists(config_file) else {}
+                source_config_file = _dataset_config_file(dataset, model)
+                if os.path.exists(source_config_file):
+                    dataset_cfg = _apply_model_overrides(
+                        _load_dataset_config(source_config_file), model
+                    )
+                else:
+                    dataset_cfg = {"model_id": model_id}
+                config_file = _write_effective_dataset_config(
+                    output_dir, dataset, dataset_cfg
+                )
 
-                max_bs = _get_max_batch_size(config_file)
+                max_bs = dataset_cfg.get("max_batch_size")
                 if max_bs is not None and batch_size > max_bs:
                     print(f"[sweep] Skipping {slug} bs={batch_size} {dataset} — bs > max_batch_size={max_bs}")
                     checkpoint.mark(slug, batch_size, dataset, "skipped",
@@ -759,6 +820,7 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                     f"max_prefill_tokens={max_prefill_tokens} "
                     f"mem_fraction_static={mem_fraction_static}"
                 )
+                print(f"[sweep]   config={source_config_file}")
                 print(sep)
 
                 selected_gpus = wait_for_idle_gpus(tp)

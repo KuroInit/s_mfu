@@ -1,10 +1,7 @@
-benchmark_type: reasoning
+benchmark_type: chat
 dataset_names:
-- gsm8k
-metrics:
-- em
-- f1
-model_id: Qwen/Qwen3-Next-80B-A3B-Instruct
+- azure_chat
+metrics: []
 precision: bfloat16
 dataset_split: test
 num_samples: 200

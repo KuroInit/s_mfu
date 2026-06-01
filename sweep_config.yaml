@@ -6,13 +6,13 @@
 # saturate at low concurrency and hides the expected rise/plateau/collapse.
 #
 # Benchmark lanes:
-#   chat: share-gpt / azure-style chat configs once MoE-CAP loaders exist
+#   chat: sharegpt / azure_chat via harness-side loader registration
 #   reasoning: mmlu_pro (uses MoE-CAP's existing mmlu-pro loader)
 #   agentic: swe_bench configs once a MoE-CAP loader exists
 batch_sizes: [2,4,8,16,32,64,128,256]
 benchmark_types:
   prefill: [batched_prefill]
-  chat: []
+  chat: [sharegpt, azure_chat]
   reasoning: [mmlu_pro]
   agentic: []
 port: 30000

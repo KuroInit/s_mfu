@@ -62,7 +62,7 @@ Current active sweep scope:
 batch_sizes: [2, 4, 8, 16, 32, 64, 128, 256]
 benchmark_types:
   prefill: [batched_prefill]
-  chat: []
+  chat: [sharegpt, azure_chat]
   reasoning: [mmlu_pro]
   agentic: []
 port: 30000
@@ -100,7 +100,7 @@ Benchmark lanes are declared with `benchmark_types`; this is the source of truth
 for which datasets the harness runs:
 
 - `prefill` — fixed-length packed-prefill measurement configs such as `batched_prefill`.
-- `chat` — intended for ShareGPT / Azure-style chat traces once corresponding MoE-CAP loaders are available.
+- `chat` — ShareGPT and Azure-style chat traces, registered through the harness-side MoE-CAP runner wrapper.
 - `reasoning` — ready to run through `mmlu_pro`, backed by MoE-CAP's existing `mmlu-pro` loader.
 - `agentic` — intended for SWE-Bench once a corresponding MoE-CAP loader is available.
 
@@ -110,7 +110,7 @@ empty to skip it:
 ```yaml
 benchmark_types:
   prefill: [batched_prefill]
-  chat: []
+  chat: [sharegpt, azure_chat]
   reasoning: [mmlu_pro]
   agentic: []
 ```
@@ -119,22 +119,45 @@ The active sweep includes Qwen MoE, Qwen3-30B, and Qwen3-Next-80B.
 
 ## `configs/`
 
-Each active `<dataset>_<slug>.yaml` is a MoE-CAP benchmark config passed to the runner.
+Each active dataset has one shared `configs/<dataset>.yaml` file. The harness
+injects the current sweep model ID into a generated `effective_config_*.yaml`
+inside the result directory before invoking MoE-CAP. Use `model_overrides`
+inside the shared dataset config only for fields that genuinely differ by
+model, such as `max_batch_size` or chunked-prefill scheduling knobs.
 
 Active batched-prefill configs use fixed-length prompts and `target_output_tokens: 1`, so the run stays focused on packed prefill while MoE-CAP can still record decode steps when present.
 
 Reasoning configs use `benchmark_type: reasoning` and can run without
-`fixed_length_mode`; the included `mmlu_pro_*` configs set `dataset_names:
-["mmlu-pro"]`, `metrics: ["em"]`, and `num_samples: 200`. For non-fixed
-reasoning runs, MoE-CAP's dataset loader controls the generation cap.
+`fixed_length_mode`; `configs/mmlu_pro.yaml` sets `dataset_names: ["mmlu-pro"]`,
+`metrics: ["em"]`, and `num_samples: 200`. For non-fixed reasoning runs,
+MoE-CAP's dataset loader controls the generation cap.
 
-| Config | Input tokens | Chunking / caps |
+Chat configs use `benchmark_type: chat` and run through
+`s_mfu_moe_cap_runner`, which registers harness-side `sharegpt` and
+`azure_chat` loaders before delegating to MoE-CAP. ShareGPT defaults to the
+explicit HuggingFace JSON file
+`anon8231489123/ShareGPT_Vicuna_unfiltered/ShareGPT_V3_unfiltered_cleaned_split.json`
+because that dataset card does not expose a normal auto-detected dataset
+viewer. Set `S_MFU_SHAREGPT_PATH` to use a local JSON/JSONL file instead, or
+`S_MFU_SHAREGPT_HF_DATASET` for another HuggingFace dataset.
+
+Azure-style chat has no canonical HuggingFace dataset wired in by default.
+Use `S_MFU_AZURE_CHAT_PATH` for a local JSON/JSONL trace file, or set
+`S_MFU_AZURE_CHAT_HF_DATASET` to an explicit HuggingFace dataset you want to
+treat as Azure chat traces. Both loaders accept OpenAI-style `messages` rows,
+common ShareGPT-style `conversations` rows, and Alpaca-style
+`instruction`/`input` rows. Multi-turn chat rows are sent as real chat message
+arrays; trailing assistant answers are removed so the benchmark prompt ends on
+the user request being measured.
+
+| Effective config | Input tokens | Chunking / caps |
 | --- | ---: | --- |
-| `batched_prefill_qwen1_5_moe.yaml` | 2048 | `chunked_prefill_size: 131072`, `max_prefill_tokens: 131072`, `mem_fraction_static: 0.9` |
-| `batched_prefill_qwen3_30b.yaml` | 2048 | `chunked_prefill_size: 16384`, `max_batch_size: 128` |
-| `batched_prefill_qwen3_next_80b.yaml` | 1024 | `chunked_prefill_size: 8192`, `max_batch_size: 256` |
+| `batched_prefill` / `qwen1_5_moe` | 2048 | `chunked_prefill_size: 131072`, `max_prefill_tokens: 131072`, `mem_fraction_static: 0.9` |
+| `batched_prefill` / `qwen3_30b` | 2048 | `chunked_prefill_size: 16384`, `max_batch_size: 128` |
+| `batched_prefill` / `qwen3_next_80b` | 1024 | `chunked_prefill_size: 8192`, `max_batch_size: 256` |
 
-`batched_prefill_deepseek_v2_lite.yaml` is still available for optional DeepSeek-V2-Lite runs, but it is not enabled in the default sweep.
+Optional DeepSeek-V2-Lite values are kept as `model_overrides` in the shared
+dataset configs, but that model is not enabled in the default sweep.
 
 ## How it works
 

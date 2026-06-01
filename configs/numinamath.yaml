@@ -1,9 +1,9 @@
 benchmark_type: reasoning
 dataset_names:
-- mmlu-pro
+- numinamath
 metrics:
 - em
-model_id: Qwen/Qwen3-Next-80B-A3B-Instruct
+- f1
 precision: bfloat16
 dataset_split: test
 num_samples: 200
@@ -14,4 +14,4 @@ prefill_mode: null
 chunked_prefill_size: null
 max_prefill_tokens: null
 mem_fraction_static: null
-max_batch_size: 128
+max_batch_size: null

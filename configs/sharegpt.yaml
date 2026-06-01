@@ -1,11 +1,9 @@
-benchmark_type: reasoning
+benchmark_type: chat
 dataset_names:
-- mmlu-pro
-metrics:
-- em
-model_id: Qwen/Qwen3-30B-A3B
+- sharegpt
+metrics: []
 precision: bfloat16
-dataset_split: test
+dataset_split: train
 num_samples: 200
 fixed_length_mode: false
 target_input_tokens: null

@@ -424,7 +424,7 @@ def run_benchmark(
     dataset_cfg = _load_dataset_config(config_file)
     benchmark_type = dataset_cfg.get("benchmark_type")
     is_chat = benchmark_type == "chat"
-    module = "s_mfu_moe_cap_runner" if is_chat else "moe_cap.runner.openai_api_profile"
+    module = "s_mfu.moe_cap_runner" if is_chat else "moe_cap.runner.openai_api_profile"
     endpoint = "chat/completions" if is_chat else "completions"
     cmd = [
         sys.executable, "-m", module,
@@ -502,16 +502,6 @@ def persist_failure_record(
 
 
 # ─── Config Loading ───────────────────────────────────────────────────────────
-
-def _get_max_batch_size(config_file: str) -> Optional[int]:
-    """Read max_batch_size from a dataset config YAML, or None if not set."""
-    try:
-        with open(config_file, "r") as f:
-            cfg = yaml.safe_load(f) or {}
-        return cfg.get("max_batch_size")
-    except FileNotFoundError:
-        return None
-
 
 def _load_dataset_config(config_file: str) -> dict:
     """Load one MoE-CAP benchmark YAML."""

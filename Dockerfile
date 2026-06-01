@@ -16,12 +16,13 @@ RUN pip install --no-cache-dir -e .
 
 RUN pip install --no-cache-dir matplotlib
 
-# Copy orchestrator files into the image.
-# The MoE-CAP working directory is the CWD, so relative paths in
-# orchestrator.py (e.g. "configs/gsm8k_qwen3_30b.yaml") resolve correctly.
+# Copy harness files into the image.
+# The MoE-CAP working directory is the CWD, so relative paths such as
+# "configs/gsm8k.yaml" resolve correctly.
 COPY orchestrator.py .
 COPY sweep_config.yaml .
 COPY configs/ configs/
+COPY s_mfu/ s_mfu/
 COPY analyze.py .
 
 # Expert distribution records and HF model cache are mounted at runtime.

@@ -2,7 +2,7 @@
 
 import json
 
-from s_mfu_chat_loaders import register_chat_loaders
+from s_mfu.chat_loaders import register_chat_loaders
 
 
 def _patch_chat_message_inputs() -> None:

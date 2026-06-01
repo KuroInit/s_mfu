@@ -1,6 +1,6 @@
 """Harness-side chat dataset loaders for MoE-CAP.
 
-These loaders are registered by ``s_mfu_moe_cap_runner`` at process startup so
+These loaders are registered by ``s_mfu.moe_cap_runner`` at process startup so
 the harness can support chat traces without editing the MoE-CAP checkout.
 """
 
@@ -57,7 +57,10 @@ def _load_hf_dataset(
     return load_dataset(dataset_name, **kwargs)
 
 
-def _iter_limited(rows: Iterable[dict[str, Any]], limit: int | None) -> Iterator[dict[str, Any]]:
+def _iter_limited(
+    rows: Iterable[dict[str, Any]],
+    limit: int | None,
+) -> Iterator[dict[str, Any]]:
     for i, row in enumerate(rows):
         if limit is not None and limit > 0 and i >= limit:
             break

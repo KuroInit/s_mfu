@@ -18,7 +18,7 @@
 - Added `benchmark_type` to benchmark configs.
 - Added `configs/mmlu_pro.yaml` for the active reasoning lane.
 - Added chat configs for ShareGPT and Azure-style chat traces.
-- Added a harness-side MoE-CAP runner wrapper for chat datasets.
+- Added a packaged harness-side MoE-CAP runner wrapper for chat datasets.
 - Added harness-side `sharegpt` and `azure_chat` loaders without modifying MoE-CAP.
 - Kept reasoning configs non-fixed-length so the MoE-CAP dataset loader controls prompts and generation caps.
 - Kept chat configs non-fixed-length so real trace prompts drive request shape.

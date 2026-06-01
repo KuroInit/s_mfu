@@ -4,7 +4,6 @@ import subprocess
 import json
 import yaml
 import pytest
-import tempfile
 from unittest.mock import patch, MagicMock, call
 
 # Add project root to path
@@ -448,7 +447,7 @@ class TestRunBenchmark:
                 port=30000,
             )
         cmd = mock_run.call_args[0][0]
-        assert cmd[1:3] == ["-m", "s_mfu_moe_cap_runner"]
+        assert cmd[1:3] == ["-m", "s_mfu.moe_cap_runner"]
         assert "http://localhost:30000/v1/chat/completions" in cmd
         assert "--use-chat-api" in cmd
 

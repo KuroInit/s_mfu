@@ -2,7 +2,7 @@ import json
 
 
 def test_extracts_sharegpt_conversation_roles():
-    from s_mfu_chat_loaders import _extract_messages
+    from s_mfu.chat_loaders import _extract_messages
 
     messages = _extract_messages(
         {
@@ -20,7 +20,7 @@ def test_extracts_sharegpt_conversation_roles():
 
 
 def test_extracts_openai_messages():
-    from s_mfu_chat_loaders import _extract_messages
+    from s_mfu.chat_loaders import _extract_messages
 
     messages = _extract_messages(
         {
@@ -38,7 +38,7 @@ def test_extracts_openai_messages():
 
 
 def test_reads_local_jsonl_and_limits_samples(tmp_path, monkeypatch):
-    from s_mfu_chat_loaders import AzureChatLoader
+    from s_mfu.chat_loaders import AzureChatLoader
 
     path = tmp_path / "azure.jsonl"
     rows = [
@@ -55,7 +55,7 @@ def test_reads_local_jsonl_and_limits_samples(tmp_path, monkeypatch):
 
 
 def test_chat_loader_drops_trailing_assistant_answer(tmp_path, monkeypatch):
-    from s_mfu_chat_loaders import ShareGPTLoader
+    from s_mfu.chat_loaders import ShareGPTLoader
 
     path = tmp_path / "sharegpt.json"
     path.write_text(
@@ -87,7 +87,7 @@ def test_chat_loader_drops_trailing_assistant_answer(tmp_path, monkeypatch):
 
 
 def test_sharegpt_default_uses_explicit_hf_json(monkeypatch):
-    import s_mfu_chat_loaders
+    import s_mfu.chat_loaders as chat_loaders
 
     calls = []
 
@@ -97,10 +97,10 @@ def test_sharegpt_default_uses_explicit_hf_json(monkeypatch):
 
     monkeypatch.delenv("S_MFU_SHAREGPT_PATH", raising=False)
     monkeypatch.delenv("S_MFU_SHAREGPT_HF_DATASET", raising=False)
-    monkeypatch.setattr(s_mfu_chat_loaders, "_load_hf_dataset", fake_load_hf_dataset)
+    monkeypatch.setattr(chat_loaders, "_load_hf_dataset", fake_load_hf_dataset)
     config = type("Config", (), {"dataset_split": "train", "num_samples": 1})()
 
-    loader = s_mfu_chat_loaders.ShareGPTLoader(config)
+    loader = chat_loaders.ShareGPTLoader(config)
 
     assert loader.get_input() == [[{"role": "user", "content": "hello"}]]
     assert calls[0][0] == ("json",)
@@ -109,7 +109,7 @@ def test_sharegpt_default_uses_explicit_hf_json(monkeypatch):
 
 
 def test_azure_requires_path_or_explicit_hf_dataset(monkeypatch):
-    from s_mfu_chat_loaders import AzureChatLoader
+    from s_mfu.chat_loaders import AzureChatLoader
 
     monkeypatch.delenv("S_MFU_AZURE_CHAT_PATH", raising=False)
     monkeypatch.delenv("S_MFU_AZURE_CHAT_HF_DATASET", raising=False)

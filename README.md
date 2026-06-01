@@ -133,7 +133,7 @@ Reasoning configs use `benchmark_type: reasoning` and can run without
 MoE-CAP's dataset loader controls the generation cap.
 
 Chat configs use `benchmark_type: chat` and run through
-`s_mfu_moe_cap_runner`, which registers harness-side `sharegpt` and
+`s_mfu.moe_cap_runner`, which registers harness-side `sharegpt` and
 `azure_chat` loaders before delegating to MoE-CAP. ShareGPT defaults to the
 explicit HuggingFace JSON file
 `anon8231489123/ShareGPT_Vicuna_unfiltered/ShareGPT_V3_unfiltered_cleaned_split.json`

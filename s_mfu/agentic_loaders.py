@@ -31,10 +31,29 @@ def _read_json_or_jsonl(path: str) -> list[dict[str, Any]]:
         payload = json.load(f)
     if isinstance(payload, list):
         return payload
+    if not isinstance(payload, dict):
+        raise ValueError(f"unsupported agentic dataset JSON shape in {source}")
+    if _looks_like_swe_bench_example(payload):
+        return [payload]
     for key in ("data", "rows", "examples", "instances"):
         if isinstance(payload.get(key), list):
             return payload[key]
     raise ValueError(f"unsupported agentic dataset JSON shape in {source}")
+
+
+def _looks_like_swe_bench_example(row: dict[str, Any]) -> bool:
+    return any(
+        row.get(key)
+        for key in (
+            "problem_statement",
+            "issue",
+            "repo",
+            "instance_id",
+            "base_commit",
+            "patch",
+            "test_patch",
+        )
+    )
 
 
 def _format_swe_bench_prompt(row: dict[str, Any]) -> str:
@@ -95,6 +114,8 @@ class SWEBenchLoader(DataLoader):
         limit = getattr(self.config, "num_samples", None)
         for row in rows:
             row = dict(row)
+            if not row.get("problem_statement") and not row.get("issue"):
+                continue
             prompt = _format_swe_bench_prompt(row)
             if not prompt.strip():
                 continue

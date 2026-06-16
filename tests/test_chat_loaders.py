@@ -54,6 +54,58 @@ def test_reads_local_jsonl_and_limits_samples(tmp_path, monkeypatch):
     assert loader.get_input() == [[{"role": "user", "content": "one"}]]
 
 
+def test_reads_single_object_openai_json(tmp_path, monkeypatch):
+    from s_mfu.chat_loaders import AzureChatLoader
+
+    path = tmp_path / "azure.json"
+    path.write_text(json.dumps({"messages": [{"role": "user", "content": "one"}]}))
+
+    config = type("Config", (), {"num_samples": 1})()
+    monkeypatch.setenv("S_MFU_AZURE_CHAT_PATH", str(path))
+    loader = AzureChatLoader(config)
+
+    assert loader.get_input() == [[{"role": "user", "content": "one"}]]
+
+
+def test_reads_single_object_sharegpt_json(tmp_path, monkeypatch):
+    from s_mfu.chat_loaders import ShareGPTLoader
+
+    path = tmp_path / "sharegpt.json"
+    path.write_text(
+        json.dumps(
+            {
+                "conversations": [
+                    {"from": "human", "value": "one"},
+                    {"from": "gpt", "value": "answer"},
+                ]
+            }
+        )
+    )
+
+    config = type("Config", (), {"num_samples": 1})()
+    monkeypatch.setenv("S_MFU_SHAREGPT_PATH", str(path))
+    loader = ShareGPTLoader(config)
+
+    assert loader.get_input() == [[{"role": "user", "content": "one"}]]
+
+
+def test_chat_num_samples_counts_valid_prompts_after_filtering(tmp_path, monkeypatch):
+    from s_mfu.chat_loaders import ShareGPTLoader
+
+    path = tmp_path / "sharegpt.jsonl"
+    rows = [
+        {"conversations": [{"from": "gpt", "value": "assistant only"}]},
+        {"conversations": [{"from": "human", "value": "one"}]},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+
+    config = type("Config", (), {"num_samples": 1})()
+    monkeypatch.setenv("S_MFU_SHAREGPT_PATH", str(path))
+    loader = ShareGPTLoader(config)
+
+    assert loader.get_input() == [[{"role": "user", "content": "one"}]]
+
+
 def test_azure_reads_official_token_count_csv(tmp_path, monkeypatch):
     from s_mfu.chat_loaders import AzureChatLoader
 
@@ -99,6 +151,27 @@ def test_azure_reads_parsed_token_id_jsonl(tmp_path, monkeypatch):
     assert request["prompt_token_ids"] == [111, 222, 111, 222, 111, 222]
     assert request["prompt_len"] == 6
     assert request["max_tokens"] == 3
+
+
+def test_azure_rejects_mixed_token_and_chat_rows(tmp_path, monkeypatch):
+    from s_mfu.chat_loaders import AzureChatLoader
+
+    path = tmp_path / "azure.jsonl"
+    rows = [
+        {"ContextTokens": 4, "GeneratedTokens": 2},
+        {"messages": [{"role": "user", "content": "one"}]},
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+
+    config = type("Config", (), {"num_samples": 2})()
+    monkeypatch.setenv("S_MFU_AZURE_CHAT_PATH", str(path))
+
+    try:
+        AzureChatLoader(config)
+    except ValueError as exc:
+        assert "mixes token-trace rows and text chat rows" in str(exc)
+    else:
+        raise AssertionError("AzureChatLoader should reject mixed source schemas")
 
 
 def test_chat_loader_drops_trailing_assistant_answer(tmp_path, monkeypatch):

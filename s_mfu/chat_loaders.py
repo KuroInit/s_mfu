@@ -38,7 +38,11 @@ def _read_json_or_jsonl(path: str) -> list[dict[str, Any]]:
         payload = json.load(f)
     if isinstance(payload, list):
         return payload
-    for key in ("data", "rows", "examples", "conversations"):
+    if not isinstance(payload, dict):
+        raise ValueError(f"unsupported chat dataset JSON shape in {source}")
+    if _looks_like_chat_example(payload):
+        return [payload]
+    for key in ("data", "rows", "examples"):
         if isinstance(payload.get(key), list):
             return payload[key]
     raise ValueError(f"unsupported chat dataset JSON shape in {source}")
@@ -94,6 +98,36 @@ def _message_role(message: dict[str, Any]) -> str:
     if role == "system":
         return "system"
     return role
+
+
+def _looks_like_chat_example(example: dict[str, Any]) -> bool:
+    if any(
+        key in example
+        for key in (
+            "messages",
+            "conversation",
+            "conversations",
+            "turns",
+            "prompt",
+            "input",
+            "query",
+            "question",
+            "text",
+            "instruction",
+            "input_ids",
+            "prompt_token_ids",
+            "new_input_ids",
+            "ContextTokens",
+            "GeneratedTokens",
+            "context_tokens",
+            "generated_tokens",
+        )
+    ):
+        return True
+    meta = example.get("meta")
+    return isinstance(meta, dict) and any(
+        key in meta for key in ("input_length", "output_length")
+    )
 
 
 def _extract_messages(example: dict[str, Any]) -> list[dict[str, str]]:
@@ -297,7 +331,7 @@ class _ChatTraceLoader(DataLoader):
 
     def _process(self, rows: Iterable[dict[str, Any]]) -> None:
         limit = getattr(self.config, "num_samples", None)
-        for row in _iter_limited(rows, limit):
+        for row in rows:
             messages = _extract_messages(row)
             if not messages:
                 continue
@@ -307,6 +341,8 @@ class _ChatTraceLoader(DataLoader):
                 self.system_prompts.append("")
                 self.chat_messages.append(prompt_messages)
                 self.prompts.append(prompt)
+            if limit is not None and limit > 0 and len(self.prompts) >= limit:
+                break
 
     def get_input(self):
         return self.chat_messages
@@ -338,6 +374,7 @@ class AzureChatLoader(_ChatTraceLoader):
     hf_dataset = ""
 
     def __init__(self, config):
+        self._input_mode: str | None = None
         super().__init__(config)
         self.max_tokens_by_request = [
             item["max_tokens"] for item in self.chat_messages
@@ -349,6 +386,7 @@ class AzureChatLoader(_ChatTraceLoader):
         for row in rows:
             token_request = _extract_azure_token_request(row)
             if token_request is not None:
+                self._set_input_mode("token")
                 self.system_prompts.append("")
                 self.chat_messages.append(token_request)
                 self.prompts.append(str(token_request["prompt_len"]))
@@ -356,6 +394,7 @@ class AzureChatLoader(_ChatTraceLoader):
                 messages = _extract_messages(row)
                 if not messages:
                     continue
+                self._set_input_mode("chat")
                 prompt_messages = _prompt_messages(messages)
                 prompt = _messages_to_text(prompt_messages)
                 if prompt_messages and prompt:
@@ -364,6 +403,16 @@ class AzureChatLoader(_ChatTraceLoader):
                     self.prompts.append(prompt)
             if limit is not None and limit > 0 and len(self.prompts) >= limit:
                 break
+
+    def _set_input_mode(self, mode: str) -> None:
+        if self._input_mode is None:
+            self._input_mode = mode
+            return
+        if self._input_mode != mode:
+            raise ValueError(
+                "Azure chat source mixes token-trace rows and text chat rows; "
+                "use one schema per run"
+            )
 
 
 def register_chat_loaders() -> None:

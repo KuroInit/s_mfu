@@ -57,3 +57,50 @@ def test_swe_bench_default_uses_lite_hf_dataset(monkeypatch):
     assert calls[0][0] == ("princeton-nlp/SWE-bench_Lite",)
     assert calls[0][1]["split"] == "test"
     assert calls[0][1]["streaming"] is True
+
+
+def test_swe_bench_reads_single_object_json(tmp_path, monkeypatch):
+    from s_mfu.agentic_loaders import SWEBenchLoader
+
+    path = tmp_path / "swe.json"
+    path.write_text(
+        json.dumps(
+            {
+                "repo": "pvlib/pvlib-python",
+                "instance_id": "pvlib__pvlib-python-1707",
+                "base_commit": "40e9e97",
+                "problem_statement": "Fix physical IAM.",
+                "patch": "",
+            }
+        )
+    )
+
+    config = type("Config", (), {"num_samples": 1})()
+    monkeypatch.setenv("S_MFU_SWEBENCH_PATH", str(path))
+    loader = SWEBenchLoader(config)
+
+    assert len(loader.get_input()) == 1
+    assert "Fix physical IAM." in loader.get_input()[0]
+
+
+def test_swe_bench_skips_malformed_rows_before_sample_limit(tmp_path, monkeypatch):
+    from s_mfu.agentic_loaders import SWEBenchLoader
+
+    path = tmp_path / "swe.jsonl"
+    rows = [
+        {"repo": "blank/repo"},
+        {
+            "repo": "sqlfluff/sqlfluff",
+            "instance_id": "sqlfluff__sqlfluff-1625",
+            "problem_statement": "Rule L031 incorrectly triggers.",
+            "patch": "",
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+
+    config = type("Config", (), {"num_samples": 1})()
+    monkeypatch.setenv("S_MFU_SWEBENCH_PATH", str(path))
+    loader = SWEBenchLoader(config)
+
+    assert len(loader.get_input()) == 1
+    assert "Rule L031 incorrectly triggers." in loader.get_input()[0]

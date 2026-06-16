@@ -446,28 +446,49 @@ def run_benchmark(
     return result.returncode
 
 
-def persist_moe_cap_server_records(model_id: str, output_dir: str, dataset: str) -> Optional[Path]:
+def moe_cap_server_record_path(model_id: str) -> Path:
+    base = os.environ.get(
+        "SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR",
+        os.path.join(RESULTS_DIR, "expert_records"),
+    )
+    return Path(base) / model_id / "expert_distribution_record.jsonl"
+
+
+def clear_moe_cap_server_records(model_id: str) -> None:
+    """Remove stale server records before a new benchmark run starts."""
+    src = moe_cap_server_record_path(model_id)
+    try:
+        src.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def persist_moe_cap_server_records(
+    model_id: str,
+    output_dir: str,
+    dataset: str,
+    min_mtime: Optional[float] = None,
+) -> Optional[Path]:
     """Copy MoE-CAP's full SGLang server records into this result leaf.
 
     MoE-CAP computes continuous-batching metrics from full server records,
     including fields such as per_req_info. Its detailed_results export is a
     reduced view, so the harness preserves the full file for post-processing.
     """
-    base = os.environ.get(
-        "SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR",
-        os.path.join(RESULTS_DIR, "expert_records"),
-    )
-    src = Path(base) / model_id / "expert_distribution_record.jsonl"
+    src = moe_cap_server_record_path(model_id)
     if not src.exists():
         print(f"[runner] WARNING: MoE-CAP server record file not found: {src}")
         return None
     if src.stat().st_size == 0:
         print(f"[runner] WARNING: MoE-CAP server record file is empty: {src}")
         return None
+    if min_mtime is not None and int(src.stat().st_mtime) < int(min_mtime):
+        print(f"[runner] WARNING: MoE-CAP server record file is stale: {src}")
+        return None
 
     dest_dir = Path(output_dir) / model_id
     dest_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     dest = dest_dir / f"server_records_{dataset}_{ts}.jsonl"
     dest.write_text(src.read_text())
     print(f"[runner] preserved MoE-CAP server records at {dest}")
@@ -488,7 +509,7 @@ def persist_failure_record(
     """Write a minimal result artifact for runs that fail before metrics exist."""
     dest_dir = Path(output_dir) / model_id
     dest_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     dest = dest_dir / f"failure_{dataset}_{ts}.json"
     payload = {
         "status": status,
@@ -820,9 +841,19 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
 
                 selected_gpus = wait_for_idle_gpus(tp)
                 if selected_gpus == []:
-                    print(
-                        f"[gpu] Skipping {slug} bs={batch_size} {dataset}: "
-                        f"no free idle GPU available for tp={tp}"
+                    error = (
+                        f"no free idle GPU available for tp={tp} "
+                        f"after {GPU_MAX_IDLE_CHECKS} check(s)"
+                    )
+                    print(f"[gpu] Skipping {slug} bs={batch_size} {dataset}: {error}")
+                    persist_failure_record(
+                        model_id, slug, output_dir, dataset, batch_size,
+                        tp, "gpu_unavailable", error, None,
+                    )
+                    checkpoint.mark(
+                        slug, batch_size, dataset, "failed",
+                        error,
+                        model_id=model_id,
                     )
                     done += 1
                     continue
@@ -862,10 +893,17 @@ def run_sweep(config: dict, checkpoint: Checkpoint) -> None:
                         done += 1
                         continue
 
+                    clear_moe_cap_server_records(model_id)
+                    run_started_at = time.time()
                     rc = run_benchmark(config_file, batch_size, output_dir, port)
 
                     if rc == 0:
-                        preserved = persist_moe_cap_server_records(model_id, output_dir, dataset)
+                        preserved = persist_moe_cap_server_records(
+                            model_id,
+                            output_dir,
+                            dataset,
+                            min_mtime=run_started_at,
+                        )
                         if preserved is None:
                             error = (
                                 "Runner completed but no valid SGLang server records were found; "

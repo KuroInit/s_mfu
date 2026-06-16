@@ -60,84 +60,32 @@ def _patch_chat_message_inputs() -> None:
         def output_len_for(idx: int) -> int:
             return int(max_output_len[idx])
 
-        if batch_size is None or batch_size >= len(prompts):
-            tasks = []
-            pbar = profile.async_tqdm(total=len(prompts), desc="Processing requests")
+        concurrency = len(prompts) if batch_size is None else max(1, int(batch_size))
+        concurrency = min(concurrency, len(prompts))
+        semaphore = asyncio.Semaphore(concurrency)
+        pbar = profile.async_tqdm(total=len(prompts), desc="Processing requests")
 
-            for idx, prompt in enumerate(prompts):
+        async def run_one(idx: int):
+            async with semaphore:
                 request_input = profile.RequestFuncInput(
-                    prompt=prompt,
+                    prompt=prompts[idx],
                     api_url=self.api_url,
                     output_len=output_len_for(idx),
                     model=self.hf_model_name,
                     extra_request_body={},
                     ignore_eos=self.ignore_eos,
                 )
-                tasks.append(self.request_fn(request_input, pbar))
+                return await self.request_fn(request_input, pbar)
 
-            torch.cuda.synchronize()
-            start_time = time.perf_counter()
-            results = await asyncio.gather(*tasks)
-            torch.cuda.synchronize()
-            total_time = time.perf_counter() - start_time
-            pbar.close()
-            return results, total_time
-
-        all_results = [None] * len(prompts)
-        pbar = profile.async_tqdm(total=len(prompts), desc="Processing requests")
-
+        tasks = [asyncio.create_task(run_one(idx)) for idx in range(len(prompts))]
         torch.cuda.synchronize()
         start_time = time.perf_counter()
-
-        batch_start_idx = 0
-        active_tasks = {}
-
-        while batch_start_idx < len(prompts) or active_tasks:
-            if batch_start_idx < len(prompts):
-                batch_end_idx = min(batch_start_idx + batch_size, len(prompts))
-
-                for idx in range(batch_start_idx, batch_end_idx):
-                    request_input = profile.RequestFuncInput(
-                        prompt=prompts[idx],
-                        api_url=self.api_url,
-                        output_len=output_len_for(idx),
-                        model=self.hf_model_name,
-                        extra_request_body={},
-                        ignore_eos=self.ignore_eos,
-                    )
-                    task = asyncio.create_task(self.request_fn(request_input, pbar))
-                    active_tasks[task] = idx
-
-                current_batch_size = batch_end_idx - batch_start_idx
-                threshold = current_batch_size // 2
-                completed_in_batch = 0
-
-                while completed_in_batch < threshold and active_tasks:
-                    done, _ = await asyncio.wait(
-                        active_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in done:
-                        result = await task
-                        idx = active_tasks.pop(task)
-                        all_results[idx] = result
-                        if batch_start_idx <= idx < batch_end_idx:
-                            completed_in_batch += 1
-
-                batch_start_idx = batch_end_idx
-            else:
-                done, _ = await asyncio.wait(
-                    active_tasks.keys(), return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in done:
-                    result = await task
-                    idx = active_tasks.pop(task)
-                    all_results[idx] = result
-
+        results = await asyncio.gather(*tasks)
         torch.cuda.synchronize()
         total_time = time.perf_counter() - start_time
         pbar.close()
 
-        return all_results, total_time
+        return results, total_time
 
     OpenAIAPIMoEProfiler._prepare_inputs = prepare_inputs
     OpenAIAPIMoEProfiler.run_benchmark = run_benchmark

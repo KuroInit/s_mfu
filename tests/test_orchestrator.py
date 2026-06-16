@@ -487,6 +487,27 @@ class TestFailureRecords:
         assert payload["tp"] == 2
         assert payload["cuda_visible_devices"] == "0,1"
 
+    def test_persist_moe_cap_server_records_rejects_stale_source(self, tmp_path, monkeypatch):
+        import os
+        from orchestrator import persist_moe_cap_server_records
+
+        record_dir = tmp_path / "expert_records"
+        src = record_dir / "org" / "model" / "expert_distribution_record.jsonl"
+        src.parent.mkdir(parents=True)
+        src.write_text('{"forward_mode": "prefill"}\n')
+        os.utime(src, (1000, 1000))
+        monkeypatch.setenv("SGLANG_EXPERT_DISTRIBUTION_RECORDER_DIR", str(record_dir))
+
+        assert (
+            persist_moe_cap_server_records(
+                "org/model",
+                str(tmp_path / "out"),
+                "gsm8k",
+                min_mtime=2000,
+            )
+            is None
+        )
+
 
 # ─── Config Loading Tests ────────────────────────────────────────────────────
 
@@ -635,7 +656,7 @@ class TestRunSweep:
         mock_sleep.assert_called_once_with(15)
         assert mock_start.call_args.args[-1] == ["0", "1"]
 
-    def test_skips_without_checkpoint_after_gpu_retry_budget_exhausted(self, tmp_path):
+    def test_records_gpu_unavailable_after_retry_budget_exhausted(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint
         ckpt = Checkpoint(path=str(tmp_path / "ckpt.yaml"))
         cfg = {
@@ -647,9 +668,12 @@ class TestRunSweep:
         with patch("orchestrator.select_idle_gpus", side_effect=[[], [], []]):
             with patch("orchestrator.time.sleep"):
                 with patch("orchestrator.start_sglang") as mock_start:
-                    run_sweep(cfg, ckpt)
+                    with patch("orchestrator.persist_failure_record") as mock_failure:
+                        run_sweep(cfg, ckpt)
         mock_start.assert_not_called()
-        assert ckpt._entries == []
+        assert ckpt._entries[0]["status"] == "failed"
+        assert ckpt._entries[0]["dataset"] == "gsm8k"
+        assert mock_failure.call_args.args[6] == "gpu_unavailable"
 
     def test_records_oom_failure_when_sglang_exits_during_startup(self, tmp_path):
         from orchestrator import run_sweep, Checkpoint

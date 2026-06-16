@@ -54,6 +54,53 @@ def test_reads_local_jsonl_and_limits_samples(tmp_path, monkeypatch):
     assert loader.get_input() == [[{"role": "user", "content": "one"}]]
 
 
+def test_azure_reads_official_token_count_csv(tmp_path, monkeypatch):
+    from s_mfu.chat_loaders import AzureChatLoader
+
+    path = tmp_path / "azure.csv"
+    path.write_text(
+        "TIMESTAMP,ContextTokens,GeneratedTokens\n"
+        "2023-11-16 18:15:46.6805900,374,44\n"
+        "2023-11-16 18:15:50.9951690,396,109\n"
+    )
+
+    config = type("Config", (), {"num_samples": 1})()
+    monkeypatch.setenv("S_MFU_AZURE_CHAT_PATH", str(path))
+    loader = AzureChatLoader(config)
+
+    request = loader.get_input()[0]
+    assert len(request["prompt_token_ids"]) == 374
+    assert request["prompt_len"] == 374
+    assert request["max_tokens"] == 44
+
+
+def test_azure_reads_parsed_token_id_jsonl(tmp_path, monkeypatch):
+    from s_mfu.chat_loaders import AzureChatLoader
+
+    path = tmp_path / "trace_parsed.jsonl"
+    row = {
+        "timestamp": 0.0,
+        "meta": {
+            "input_length": 6,
+            "output_length": 3,
+            "prev_total_len": 4,
+            "new_input_len": 2,
+        },
+        "new_input_ids": [111, 222],
+        "max_tokens": 3,
+    }
+    path.write_text(json.dumps(row) + "\n")
+
+    config = type("Config", (), {"num_samples": 1})()
+    monkeypatch.setenv("S_MFU_AZURE_CHAT_PATH", str(path))
+    loader = AzureChatLoader(config)
+
+    request = loader.get_input()[0]
+    assert request["prompt_token_ids"] == [111, 222, 111, 222, 111, 222]
+    assert request["prompt_len"] == 6
+    assert request["max_tokens"] == 3
+
+
 def test_chat_loader_drops_trailing_assistant_answer(tmp_path, monkeypatch):
     from s_mfu.chat_loaders import ShareGPTLoader
 

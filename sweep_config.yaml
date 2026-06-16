@@ -8,13 +8,13 @@
 # Benchmark lanes:
 #   chat: sharegpt / azure_chat via harness-side loader registration
 #   reasoning: mmlu_pro (uses MoE-CAP's existing mmlu-pro loader)
-#   agentic: swe_bench configs once a MoE-CAP loader exists
+#   agentic: swe_bench via harness-side loader registration
 batch_sizes: [2,4,8,16,32,64,128,256]
 benchmark_types:
   prefill: [batched_prefill]
   chat: [sharegpt, azure_chat]
   reasoning: [mmlu_pro]
-  agentic: []
+  agentic: [swe_bench]
 port: 30000
 gpu_memory_gb: 94
 

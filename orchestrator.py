@@ -424,7 +424,12 @@ def run_benchmark(
     dataset_cfg = _load_dataset_config(config_file)
     benchmark_type = dataset_cfg.get("benchmark_type")
     is_chat = benchmark_type == "chat"
-    module = "s_mfu.moe_cap_runner" if is_chat else "moe_cap.runner.openai_api_profile"
+    uses_harness_runner = benchmark_type in {"chat", "agentic"}
+    module = (
+        "s_mfu.moe_cap_runner"
+        if uses_harness_runner
+        else "moe_cap.runner.openai_api_profile"
+    )
     endpoint = "chat/completions" if is_chat else "completions"
     cmd = [
         sys.executable, "-m", module,

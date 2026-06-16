@@ -6,7 +6,7 @@
   - `prefill: [batched_prefill]`
   - `chat: [sharegpt, azure_chat]`
   - `reasoning: [mmlu_pro]`
-  - `agentic: []`
+  - `agentic: [swe_bench]`
 - Removed the separate top-level `datasets` key from `sweep_config.yaml`.
 - Updated the harness so `run_sweep()` derives active datasets from `benchmark_types`.
 - Added validation for supported benchmark lanes: `prefill`, `chat`, `reasoning`, and `agentic`.
@@ -20,6 +20,8 @@
 - Added chat configs for ShareGPT and Azure-style chat traces.
 - Added a packaged harness-side MoE-CAP runner wrapper for chat datasets.
 - Added harness-side `sharegpt` and `azure_chat` loaders without modifying MoE-CAP.
+- Added harness-side `swe_bench` loader for SWE-Bench Lite patch-generation profiling without modifying MoE-CAP.
+- Added `configs/swe_bench.yaml` and enabled `swe_bench` under `benchmark_types.agentic`.
 - Kept reasoning configs non-fixed-length so the MoE-CAP dataset loader controls prompts and generation caps.
 - Kept chat configs non-fixed-length so real trace prompts drive request shape.
 - Kept batched-prefill configs fixed-length for S-MFU/S-MBU packed-prefill measurement.
@@ -36,16 +38,12 @@
   - Confirm whether flattened multi-turn transcripts are sufficient for measurement or whether true multi-message preservation is required.
   - Add stricter chat-specific validation if new config fields become necessary.
 
-- Implement agentic benchmark support.
-  - Add or confirm MoE-CAP loader support for SWE-Bench.
-  - Decide the canonical dataset slug, for example `swe_bench`.
-  - Add SWE-Bench configs for each active model.
-  - Enable SWE-Bench under `benchmark_types.agentic`.
+- Harden agentic benchmark support.
+  - Run SWE-Bench Lite smoke tests with `S_MFU_SWEBENCH_PATH` or the default HuggingFace dataset.
   - Confirm output artifacts have enough task-level metadata for later analysis.
 
 - Tighten benchmark-type behavior.
   - Add lane-specific validation rules for agentic once SWE-Bench config shape is known.
-  - Add acceptance tests for agentic configs after loaders/configs exist.
 
 - Expand analysis coverage.
   - Confirm S-MFU/S-MBU aggregation behaves correctly for non-prefill reasoning runs.
@@ -56,7 +54,7 @@
   - Run a small `batched_prefill` smoke test.
   - Run a small `mmlu_pro` smoke test.
   - Run `sharegpt` and `azure_chat` smoke tests.
-  - Run SWE-Bench smoke tests after agentic support exists.
+  - Run SWE-Bench smoke tests.
 
 ## Guardrails
 

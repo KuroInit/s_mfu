@@ -451,6 +451,21 @@ class TestRunBenchmark:
         assert "http://localhost:30000/v1/chat/completions" in cmd
         assert "--use-chat-api" in cmd
 
+    def test_agentic_config_uses_harness_runner_and_completions_api(self):
+        from orchestrator import run_benchmark
+        with patch("orchestrator.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            run_benchmark(
+                config_file="configs/swe_bench.yaml",
+                batch_size=8,
+                output_dir="/results/qwen3_30b/bs8/swe_bench/",
+                port=30000,
+            )
+        cmd = mock_run.call_args[0][0]
+        assert cmd[1:3] == ["-m", "s_mfu.moe_cap_runner"]
+        assert "http://localhost:30000/v1/completions" in cmd
+        assert "--use-chat-api" not in cmd
+
 class TestFailureRecords:
     def test_persist_failure_record_writes_analyzable_artifact(self, tmp_path):
         from orchestrator import persist_failure_record
@@ -802,6 +817,25 @@ class TestSweepConfigValidation:
         )
         sweep = self._make_sweep()
         sweep["benchmark_types"] = {"chat": ["sharegpt"]}
+        monkeypatch.chdir(tmp_path)
+        validate_sweep_configs(sweep)
+
+    def test_validate_sweep_configs_accepts_agentic_config(self, tmp_path, monkeypatch):
+        from orchestrator import validate_sweep_configs
+        configs = tmp_path / "configs"
+        configs.mkdir()
+        self._write_config(
+            configs,
+            "swe_bench",
+            benchmark_type="agentic",
+            dataset_names=["swe_bench"],
+            fixed_length_mode=False,
+            target_input_tokens=None,
+            target_output_tokens=None,
+            metrics=[],
+        )
+        sweep = self._make_sweep()
+        sweep["benchmark_types"] = {"agentic": ["swe_bench"]}
         monkeypatch.chdir(tmp_path)
         validate_sweep_configs(sweep)
 

@@ -7,3 +7,4 @@ __pycache__/
 MoE-CAP/
 docs/
 *.jsonl
+.vscode/

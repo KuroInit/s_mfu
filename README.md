@@ -64,7 +64,7 @@ benchmark_types:
   prefill: [batched_prefill]
   chat: [sharegpt, azure_chat]
   reasoning: [mmlu_pro]
-  agentic: []
+  agentic: [swe_bench]
 port: 30000
 gpu_memory_gb: 94
 
@@ -102,7 +102,7 @@ for which datasets the harness runs:
 - `prefill` — fixed-length packed-prefill measurement configs such as `batched_prefill`.
 - `chat` — ShareGPT and Azure-style chat traces, registered through the harness-side MoE-CAP runner wrapper.
 - `reasoning` — ready to run through `mmlu_pro`, backed by MoE-CAP's existing `mmlu-pro` loader.
-- `agentic` — intended for SWE-Bench once a corresponding MoE-CAP loader is available.
+- `agentic` — SWE-Bench-style patch-generation prompts, registered through the harness-side MoE-CAP runner wrapper.
 
 To choose what runs, put the dataset slug in exactly one lane. Leave a lane
 empty to skip it:
@@ -112,7 +112,7 @@ benchmark_types:
   prefill: [batched_prefill]
   chat: [sharegpt, azure_chat]
   reasoning: [mmlu_pro]
-  agentic: []
+  agentic: [swe_bench]
 ```
 
 The active sweep includes Qwen MoE, Qwen3-30B, and Qwen3-Next-80B.
@@ -150,6 +150,14 @@ common ShareGPT-style `conversations` rows, and Alpaca-style
 arrays; trailing assistant answers are removed so the benchmark prompt ends on
 the user request being measured.
 
+Agentic configs use `benchmark_type: agentic` and run through
+`s_mfu.moe_cap_runner`, which registers the harness-side `swe_bench` loader.
+`configs/swe_bench.yaml` defaults to `princeton-nlp/SWE-bench_Lite`, split
+`test`, and formats each instance as a one-shot patch-generation prompt for
+S-MFU/S-MBU profiling. Set `S_MFU_SWEBENCH_PATH` for a local JSON/JSONL file,
+or `S_MFU_SWEBENCH_HF_DATASET` to point at another SWE-Bench-compatible HF
+dataset.
+
 | Effective config | Input tokens | Chunking / caps |
 | --- | ---: | --- |
 | `batched_prefill` / `qwen1_5_moe` | 2048 | `chunked_prefill_size: 131072`, `max_prefill_tokens: 131072`, `mem_fraction_static: 0.9` |
@@ -166,7 +174,7 @@ For each `(slug, batch_size, dataset)` triple not yet marked success in the chec
 1. **Pre-flight** — validates all MoE-CAP configs, memory guardrails, and HF model IDs up front.
 2. **Pick GPUs** — by default, uses `nvidia-smi` to bind each SGLang server to enough low-memory physical GPUs. Non-numeric `CUDA_VISIBLE_DEVICES` values are treated as unmanaged and left alone.
 3. **Start SGLang** — launches `moe_cap.systems.sglang` with `--enable-metrics`, `--enable-expert-distribution-metrics`, and `--disable-radix-cache`; polls `/health` until ready (25 min cap). `--chunked-prefill-size`, `--max-prefill-tokens`, and `--mem-fraction-static` are passed only when explicitly configured.
-4. **Run benchmark** — invokes `moe_cap.runner.openai_api_profile` with the configured `--server-batch-size`.
+4. **Run benchmark** — invokes MoE-CAP directly for built-in datasets, or `s_mfu.moe_cap_runner` for harness-side chat/agentic loaders, with the configured `--server-batch-size`.
 5. **Preserve server records** — copies MoE-CAP/SGLang expert-distribution records next to the result files so analysis can use MoE-CAP's continuous-batching metric function accurately.
 6. **Checkpoint and failure artifacts** — successful cells are checkpointed. Runner, startup/OOM, and missing-server-record failures are written as `failure_<dataset>_<ts>.json` artifacts and marked failed so they can be retried later.
 7. **Shutdown** — SIGTERM -> wait -> SIGKILL; wait for the port to clear before the next triple.

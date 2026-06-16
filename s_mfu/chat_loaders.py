@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import csv
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -22,6 +23,9 @@ def _read_json_or_jsonl(path: str) -> list[dict[str, Any]]:
     source = Path(path)
     if not source.exists():
         raise FileNotFoundError(f"chat dataset file not found: {source}")
+    if source.suffix.lower() == ".csv":
+        with source.open("r", encoding="utf-8", newline="") as f:
+            return [dict(row) for row in csv.DictReader(f)]
     if source.suffix.lower() == ".jsonl":
         rows = []
         with source.open("r", encoding="utf-8") as f:
@@ -155,6 +159,99 @@ def _messages_to_text(messages: list[dict[str, str]]) -> str:
     return prompt
 
 
+def _coerce_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_int(row: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    lower = {str(key).lower(): value for key, value in row.items()}
+    for key in keys:
+        value = lower.get(key.lower())
+        if value is not None:
+            parsed = _coerce_int(value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _token_ids_from_value(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [int(token) for token in value]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("["):
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [int(token) for token in parsed]
+        return [int(token) for token in text.replace(",", " ").split()]
+    return []
+
+
+def _first_token_ids(row: dict[str, Any]) -> list[int]:
+    for key in ("input_ids", "prompt_token_ids", "new_input_ids"):
+        if key in row:
+            token_ids = _token_ids_from_value(row[key])
+            if token_ids:
+                return token_ids
+    return []
+
+
+def _repeat_to_length(token_ids: list[int], length: int) -> list[int]:
+    if length <= 0:
+        return []
+    if not token_ids:
+        return [1000] * length
+    repeats = (length + len(token_ids) - 1) // len(token_ids)
+    return (token_ids * repeats)[:length]
+
+
+def _extract_azure_token_request(row: dict[str, Any]) -> dict[str, Any] | None:
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    flat = {**meta, **row}
+    prompt_len = _first_int(
+        flat,
+        (
+            "ContextTokens",
+            "context_tokens",
+            "input_length",
+            "prompt_length",
+            "prompt_len",
+            "total_input_tokens",
+        ),
+    )
+    output_len = _first_int(
+        flat,
+        (
+            "GeneratedTokens",
+            "generated_tokens",
+            "output_length",
+            "output_len",
+            "max_tokens",
+            "max_new_tokens",
+        ),
+    )
+    token_ids = _first_token_ids(row)
+    if prompt_len is None and token_ids:
+        prompt_len = len(token_ids)
+    if prompt_len is None or output_len is None or prompt_len <= 0 or output_len <= 0:
+        return None
+    return {
+        "prompt_token_ids": _repeat_to_length(token_ids, prompt_len),
+        "prompt_len": prompt_len,
+        "max_tokens": output_len,
+        "timestamp": row.get("TIMESTAMP") or row.get("timestamp"),
+    }
+
+
 class _ChatTraceLoader(DataLoader):
     env_path_var = ""
     env_hf_dataset_var = ""
@@ -239,6 +336,34 @@ class AzureChatLoader(_ChatTraceLoader):
     env_hf_config_var = "S_MFU_AZURE_CHAT_HF_CONFIG"
     env_hf_data_files_var = "S_MFU_AZURE_CHAT_HF_DATA_FILES"
     hf_dataset = ""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.max_tokens_by_request = [
+            item["max_tokens"] for item in self.chat_messages
+            if isinstance(item, dict) and "max_tokens" in item
+        ]
+
+    def _process(self, rows: Iterable[dict[str, Any]]) -> None:
+        limit = getattr(self.config, "num_samples", None)
+        for row in rows:
+            token_request = _extract_azure_token_request(row)
+            if token_request is not None:
+                self.system_prompts.append("")
+                self.chat_messages.append(token_request)
+                self.prompts.append(str(token_request["prompt_len"]))
+            else:
+                messages = _extract_messages(row)
+                if not messages:
+                    continue
+                prompt_messages = _prompt_messages(messages)
+                prompt = _messages_to_text(prompt_messages)
+                if prompt_messages and prompt:
+                    self.system_prompts.append("")
+                    self.chat_messages.append(prompt_messages)
+                    self.prompts.append(prompt)
+            if limit is not None and limit > 0 and len(self.prompts) >= limit:
+                break
 
 
 def register_chat_loaders() -> None:

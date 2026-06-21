@@ -8,3 +8,4 @@ MoE-CAP/
 docs/
 *.jsonl
 .vscode/
+requirements.txt

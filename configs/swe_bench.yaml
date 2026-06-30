@@ -12,4 +12,4 @@ prefill_mode: null
 chunked_prefill_size: null
 max_prefill_tokens: null
 mem_fraction_static: null
-max_batch_size: 128
+max_batch_size: 512
